@@ -43,6 +43,14 @@ defmodule Voxd.PostProcess do
     |> append_trailing_space()
   end
 
+  @doc """
+  Whether `text` contains a stop phrase (`end recording`, `done`, `stop
+  dictating`, …). Used by the Session's watcher to decide when a spoken
+  command should end the recording.
+  """
+  @spec stop_phrase?(String.t()) :: boolean()
+  def stop_phrase?(text), do: Regex.match?(@stop_phrase, text)
+
   @spec truncate_at_stop_phrase(String.t()) :: String.t()
   defp truncate_at_stop_phrase(text) do
     case Regex.run(@stop_phrase, text, return: :index) do
