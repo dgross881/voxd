@@ -28,7 +28,9 @@ defmodule Voxd.MixProject do
   defp deps do
     [
       {:nx, "~> 0.12"},
-      {:exla, "~> 0.12"},
+      # runtime: false in test — the cuda13-linked NIF cannot dlopen the pip
+      # CUDA libs without bin/gpu-env, and tests must run with no GPU at all.
+      {:exla, "~> 0.12", runtime: Mix.env() != :test},
       {:bumblebee, "~> 0.7"},
       {:exile, "~> 0.14"},
       {:muontrap, "~> 1.8"},
