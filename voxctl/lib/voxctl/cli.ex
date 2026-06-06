@@ -1,17 +1,15 @@
 defmodule Voxctl.CLI do
   @moduledoc """
-  Command-line entry point for `voxctl`, the standalone control client, ported
-  1:1 from the Python `linux-voice-ctl` (`ctl.py`).
+  Command-line entry point for `voxctl`, the voxd control client.
 
   Subcommands: `toggle [--mode dictation|ai]`, `cancel`, `status`, and
   `history [--n N] [--copy N]`. `run/1` is pure-ish — it returns
   `{output, exit_code}` so the behaviour is testable without `System.halt/1`;
   `main/1` is a thin wrapper that prints the output to the right stream and
-  halts. Output on exit 0 goes to stdout, on a non-zero exit to stderr (matching
-  ctl.py, where every error path writes to stderr and exits 1).
+  halts. Output on exit 0 goes to stdout, on a non-zero exit to stderr.
 
   Socket path defaults to `/tmp/voxd.sock` (`VOXD_SOCKET` overrides); the
-  history file defaults to `~/.local/share/linux-voice/history.jsonl`. Both are
+  history file defaults to `~/.local/share/voxd/history.jsonl`. Both are
   overridable via opts for testing.
   """
 

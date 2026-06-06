@@ -1,0 +1,10 @@
+# voxd configuration example
+# Copy to ~/.config/voxd/config.toml and adjust as needed.
+# All settings are optional — omitted keys fall back to the defaults shown here.
+
+[ai]
+# Ollama model used in AI mode (voxctl toggle --mode ai).
+model = "deepseek-r1:14b"
+
+# Base URL of your Ollama instance.
+ollama_url = "http://localhost:11434"

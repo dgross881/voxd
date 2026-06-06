@@ -1,9 +1,8 @@
 defmodule Voxd.History do
   @moduledoc """
-  Append-only transcription history, ported 1:1 from the Python `history.py`.
+  Append-only transcription history stored at `~/.local/share/voxd/history.jsonl`.
 
-  Writes the same JSON Lines file as the Python daemon
-  (`~/.local/share/linux-voice/history.jsonl`) so there is no migration. Each
+  Each
   line is `{"ts": <ISO8601 local naive seconds>, "mode": mode, "text": text}`.
   `read/1` returns the last `n` entries; `n <= 0` or a missing file yields an
   empty list and blank lines are skipped.
@@ -13,13 +12,13 @@ defmodule Voxd.History do
                   System.user_home!(),
                   ".local",
                   "share",
-                  "linux-voice",
+                  "voxd",
                   "history.jsonl"
                 ])
 
   @doc """
   Append one entry to the default history file
-  (`~/.local/share/linux-voice/history.jsonl`).
+  (`~/.local/share/voxd/history.jsonl`).
   """
   @spec append(String.t(), String.t()) :: :ok
   def append(mode, text), do: append(mode, text, @history_path)

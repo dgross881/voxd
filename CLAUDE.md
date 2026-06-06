@@ -48,3 +48,41 @@ Voice-to-text daemon for Linux/Wayland. Elixir rewrite of the Python
 - Conventional prefixes (`feat:`, `fix:`, `test:`, `docs:`); no Co-Authored-By
   trailer. Ask before committing. Never commit `docs/superpowers/` or
   `.claude/plans/`.
+
+## Status (2026-06-06)
+
+- **Live and working as daily driver** — release boots, transcribes, types.
+  Verified end-to-end with Jete MP2 USB wireless mic (commit `713abb9`).
+- `voxctl` escript built and installed at `~/.local/bin/voxctl`
+  (builds into the **repo root**, not `voxctl/`).
+- In progress (uncommitted): decoupling from linux-voice paths — config →
+  `~/.config/voxd/config.toml`, history → `~/.local/share/voxd/history.jsonl`.
+
+## Key decisions (live-debugging session)
+
+| Decision | Why |
+|---|---|
+| **No silence pre-filter** (removed `silent_audio?`/`peak_amplitude`) | Python has none; the 0.001 peak threshold treated USB-mic ambient noise as silence and blocked ALL transcription. All audio goes to Whisper, as Python does with `vad_filter=True`. |
+| `meaningful?` = non-empty + no 10+ repeated chars | Was "must contain letter/digit", which swallowed Whisper's `"..."` on low-SNR audio silently. Now mirrors Python's `if not text:` while still catching `!!!!` hallucination runs. |
+| `pcm_to_tensor/1` sanitizes NaN/Inf → 0.0 | Jete USB mic emits NaN samples while hardware settles; NaN into XLA **crashes the Nx.Serving process permanently** (no-process errors on all later calls). |
+| Log raw Whisper output (`Logger.debug`) + `nothing_heard` warning | Pipeline used to fail silently — no log, no history, just an overlay flash. |
+
+## Gotchas (cost real debugging time)
+
+- **WirePlumber resets mic volume** below 100% between sessions — quiet input
+  again. Check `pactl list sources` volume before suspecting code.
+- **Stale `voxd@fedora` node name** blocks release start (`Protocol 'inet_tcp':
+  the name ... in use`). Find the old BEAM with `pgrep -f beam.smp` and kill it
+  (often a leftover `iex -S mix`).
+- Release must be **rebuilt** (`XLA_TARGET=cuda13 mix release --overwrite`)
+  after code changes — `voxd start` runs the compiled release, not the source.
+- voxctl `IO.puts` in `cli.ex` is intentional CLI output, not debug statements
+  (hook false-positives on it).
+
+## Next steps
+
+- [ ] Finish decoupling: add `priv/config.toml.example`; copy user's existing
+      `~/.config/linux-voice/config.toml` + history to new voxd paths.
+- [ ] Verify loop + commit the decoupling changes.
+- [ ] Task 14 (plan): GNOME keybinding → `voxctl toggle`; burn-in; retire
+      linux-voice.

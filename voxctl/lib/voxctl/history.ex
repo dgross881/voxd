@@ -1,10 +1,7 @@
 defmodule Voxctl.History do
   @moduledoc """
-  Reads and renders the transcription history JSONL file, ported 1:1 from the
-  Python `history.read` / `ctl.print_history`.
-
-  `voxctl` reads the same file the daemon writes
-  (`~/.local/share/linux-voice/history.jsonl`) directly — no daemon round-trip.
+  Reads and renders the transcription history JSONL file from
+  `~/.local/share/voxd/history.jsonl` directly — no daemon round-trip.
   A small duplicated reader is acceptable here (the escript is stdlib-only and
   cannot depend on the daemon's `Voxd.History`).
   """
@@ -13,12 +10,12 @@ defmodule Voxctl.History do
                   System.user_home!(),
                   ".local",
                   "share",
-                  "linux-voice",
+                  "voxd",
                   "history.jsonl"
                 ])
 
   @doc """
-  Default history file path (`~/.local/share/linux-voice/history.jsonl`).
+  Default history file path (`~/.local/share/voxd/history.jsonl`).
   """
   @spec default_path() :: String.t()
   def default_path, do: @history_path
