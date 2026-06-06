@@ -73,6 +73,29 @@ defmodule Voxd.PostProcessTest do
     end
   end
 
+  describe "meaningful?/1 — hallucination guard" do
+    test "text with letters is meaningful" do
+      assert PostProcess.meaningful?("hello world ")
+    end
+
+    test "text with only digits is meaningful" do
+      assert PostProcess.meaningful?("42 ")
+    end
+
+    test "non-latin letters are meaningful" do
+      assert PostProcess.meaningful?("привет ")
+    end
+
+    test "punctuation-only hallucination is not meaningful" do
+      refute PostProcess.meaningful?(String.duplicate("!", 250) <> " ")
+    end
+
+    test "whitespace and mixed punctuation are not meaningful" do
+      refute PostProcess.meaningful?("  ... !!! ??? ")
+      refute PostProcess.meaningful?("")
+    end
+  end
+
   describe "stop_phrase?/1 — watcher stop detection" do
     stop_cases = [
       {"end recording", "please end recording"},

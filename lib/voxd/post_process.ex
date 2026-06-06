@@ -28,6 +28,7 @@ defmodule Voxd.PostProcess do
 
   @space_before_punctuation ~r/ +([.,!?;:])/
   @lowercase_after_blank_line ~r/(\n\n)([a-z])/
+  @letter_or_digit ~r/[\p{L}\p{N}]/u
 
   @doc """
   Run the full clean-up pipeline on a raw transcription string.
@@ -50,6 +51,16 @@ defmodule Voxd.PostProcess do
   """
   @spec stop_phrase?(String.t()) :: boolean()
   def stop_phrase?(text), do: Regex.match?(@stop_phrase, text)
+
+  @doc """
+  Whether `text` contains at least one letter or digit (any script).
+
+  Whisper hallucinates strings of pure punctuation (e.g. 250 `!` characters)
+  on silent audio; such output must be treated as "nothing heard", never
+  typed into the focused window.
+  """
+  @spec meaningful?(String.t()) :: boolean()
+  def meaningful?(text), do: Regex.match?(@letter_or_digit, text)
 
   @spec truncate_at_stop_phrase(String.t()) :: String.t()
   defp truncate_at_stop_phrase(text) do
