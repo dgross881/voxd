@@ -1,18 +1,9 @@
 defmodule Voxd do
   @moduledoc """
-  Documentation for `Voxd`.
+  Voice-to-text daemon for Linux/Wayland.
+
+  The application is started by `Voxd.Application`. Control commands
+  (toggle, cancel, status) are sent over a Unix socket handled by
+  `Voxd.Ctl`. See the `voxctl` escript for the CLI client.
   """
-
-  @doc """
-  Hello world.
-
-  ## Examples
-
-      iex> Voxd.hello()
-      :world
-
-  """
-  def hello do
-    :world
-  end
 end
