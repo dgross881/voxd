@@ -138,6 +138,50 @@ defmodule Voxd.RecorderTest do
     end
   end
 
+  describe "tail/1 — last n seconds of captured audio" do
+    test "returns the whole capture when it is shorter than the window", ctx do
+      # constant fixture is exactly 1 s (16_000 samples); ask for 2 s.
+      {_pid, name} = start_recorder(ctx, ["cat", ctx.constant_path])
+
+      assert :ok = Recorder.start(name)
+      wait_until(fn -> not Recorder.recording?(name) end)
+
+      assert Recorder.tail(name, 2.0) == ctx.constant
+    end
+
+    test "returns only the trailing window when the capture is longer", ctx do
+      # Two 1 s fixtures concatenated → 2 s of audio; the last 0.5 s is the
+      # final 8_000 samples = 32_000 bytes, taken from the end of the buffer.
+      command = ["sh", "-c", "cat #{ctx.constant_path} #{ctx.constant_path}"]
+      {_pid, name} = start_recorder(ctx, command)
+
+      assert :ok = Recorder.start(name)
+      wait_until(fn -> not Recorder.recording?(name) end)
+
+      tail = Recorder.tail(name, 0.5)
+      full = Recorder.tail(name, 10.0)
+
+      assert byte_size(full) == 2 * byte_size(ctx.constant)
+      assert byte_size(tail) == 32_000
+      assert tail == binary_part(full, byte_size(full) - 32_000, 32_000)
+    end
+
+    test "is byte-aligned to whole f32 samples", ctx do
+      {_pid, name} = start_recorder(ctx, ["cat", ctx.constant_path])
+
+      assert :ok = Recorder.start(name)
+      wait_until(fn -> not Recorder.recording?(name) end)
+
+      # An odd-fraction window must not split a 4-byte sample.
+      assert rem(byte_size(Recorder.tail(name, 0.333)), 4) == 0
+    end
+
+    test "is empty before any capture", ctx do
+      {_pid, name} = start_recorder(ctx, ["cat", ctx.constant_path])
+      assert Recorder.tail(name, 2.0) == <<>>
+    end
+  end
+
   describe "stop without start" do
     test "returns :not_recording", ctx do
       {_pid, name} = start_recorder(ctx, ["cat", ctx.constant_path])

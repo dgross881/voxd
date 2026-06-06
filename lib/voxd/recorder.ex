@@ -52,6 +52,8 @@ defmodule Voxd.Recorder do
   @default_spawn_retry_delay_ms 150
   @default_warmup_deadline_ms 1_500
   @await_exit_timeout_ms 2_000
+  @sample_rate 16_000
+  @bytes_per_sample 4
 
   defstruct command: @default_command,
             warmup_deadline_ms: @default_warmup_deadline_ms,
@@ -134,6 +136,19 @@ defmodule Voxd.Recorder do
     GenServer.call(server, :recording?)
   end
 
+  @doc """
+  The last `seconds` of captured audio as a raw f32 binary.
+
+  Used by the Session's watcher tick to transcribe a short trailing window
+  without stopping the recording. The window is byte-aligned to whole f32
+  samples (4 bytes); a window longer than the capture returns the whole
+  capture, and an empty capture returns `<<>>`.
+  """
+  @spec tail(GenServer.server(), float()) :: binary()
+  def tail(server \\ __MODULE__, seconds) do
+    GenServer.call(server, {:tail, seconds})
+  end
+
   @impl true
   def init(opts) do
     Process.flag(:trap_exit, true)
@@ -174,6 +189,10 @@ defmodule Voxd.Recorder do
 
   def handle_call(:recording?, _from, state) do
     {:reply, state.recording?, state}
+  end
+
+  def handle_call({:tail, seconds}, _from, state) do
+    {:reply, tail_window(state, seconds), state}
   end
 
   @impl true
@@ -377,6 +396,26 @@ defmodule Voxd.Recorder do
   @spec captured_audio(t()) :: binary()
   defp captured_audio(state) do
     state.chunks |> Enum.reverse() |> IO.iodata_to_binary()
+  end
+
+  # The trailing `seconds` of the in-order capture, byte-aligned to whole f32
+  # samples. A window at least as long as the capture returns the whole capture.
+  @spec tail_window(t(), float()) :: binary()
+  defp tail_window(state, seconds) do
+    audio = captured_audio(state)
+    take_last_bytes(audio, window_bytes(seconds))
+  end
+
+  @spec window_bytes(float()) :: non_neg_integer()
+  defp window_bytes(seconds) do
+    trunc(seconds * @sample_rate) * @bytes_per_sample
+  end
+
+  @spec take_last_bytes(binary(), non_neg_integer()) :: binary()
+  defp take_last_bytes(audio, want) when byte_size(audio) <= want, do: audio
+
+  defp take_last_bytes(audio, want) do
+    binary_part(audio, byte_size(audio) - want, want)
   end
 
   # A chunk is silent when every f32 sample is exactly zero (digital silence from
