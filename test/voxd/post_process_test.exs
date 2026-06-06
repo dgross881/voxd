@@ -72,4 +72,39 @@ defmodule Voxd.PostProcessTest do
       end
     end
   end
+
+  describe "stop_phrase?/1 — watcher stop detection" do
+    stop_cases = [
+      {"end recording", "please end recording"},
+      {"end dictation", "end dictation"},
+      {"end transcription", "okay end transcription"},
+      {"end it", "now end it"},
+      {"end conversation", "end conversation"},
+      {"stop recording", "stop recording"},
+      {"stop dictating", "stop dictating"},
+      {"bare done", "all done"},
+      {"bare end", "the end"}
+    ]
+
+    for {description, input} <- stop_cases do
+      @stop_input input
+      test "true for #{description}" do
+        assert PostProcess.stop_phrase?(@stop_input)
+      end
+    end
+
+    no_stop_cases = [
+      {"ordinary speech", "this is a normal sentence"},
+      {"empty string", ""},
+      {"endless is not end (word boundary)", "this is endless"},
+      {"pretend is not end", "let us pretend"}
+    ]
+
+    for {description, input} <- no_stop_cases do
+      @nostop_input input
+      test "false for #{description}" do
+        refute PostProcess.stop_phrase?(@nostop_input)
+      end
+    end
+  end
 end
