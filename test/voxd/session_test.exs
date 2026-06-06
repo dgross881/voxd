@@ -167,6 +167,42 @@ defmodule Voxd.SessionTest do
     end
   end
 
+  describe "silent audio" do
+    # Whisper hallucinates on digital silence (live bug: 250 "!" chars typed
+    # into the focused window). Silent recordings must never reach the GPU.
+    test "all-zero audio shows \"Nothing heard\" without transcribing" do
+      silent_pcm = :binary.copy(<<0.0::float-32-native>>, 8_000)
+      recorder = start_stub_recorder(pcm: silent_pcm)
+      session = start_session(recorder)
+
+      assert Session.toggle(session, "dictation") == "ok"
+      wait_for_state(session, :recording)
+      assert Session.toggle(session, "dictation") == "ok"
+
+      assert_receive {:overlay, "error", "Nothing heard"}
+      refute_received {:paste, _}
+      refute_received {:history, _, _}
+      wait_for_status(session, "idle")
+    end
+  end
+
+  describe "hallucinated punctuation-only transcription" do
+    test "text with no letters or digits shows \"Nothing heard\" and is not pasted" do
+      final_transcribe(String.duplicate("!", 80))
+      recorder = start_stub_recorder(pcm: @ok_pcm)
+      session = start_session(recorder)
+
+      assert Session.toggle(session, "dictation") == "ok"
+      wait_for_state(session, :recording)
+      assert Session.toggle(session, "dictation") == "ok"
+
+      assert_receive {:overlay, "error", "Nothing heard"}
+      refute_received {:paste, _}
+      refute_received {:history, _, _}
+      wait_for_status(session, "idle")
+    end
+  end
+
   describe "too-short audio" do
     test "audio under 0.3 s shows an error and returns to idle without transcribing" do
       stub(Voxd.Transcriber.Mock, :transcribe, fn _tensor, _opts ->
@@ -402,6 +438,7 @@ defmodule Voxd.SessionTest do
   end
 
   describe "recorder DOWN" do
+    @tag capture_log: true
     test "recorder crash mid-recording shows an error and returns to idle" do
       recorder = start_stub_recorder(pcm: @ok_pcm)
       session = start_session(recorder)
@@ -416,7 +453,38 @@ defmodule Voxd.SessionTest do
     end
   end
 
+  describe "default effector wiring" do
+    # Regression: the daemon's first live toggle crashed with
+    # GenServer.whereis("recording") — default_overlay_show called
+    # Overlay.show(state, text), which bound `state` to show/3's `server`
+    # default argument. Every other test injects stub effectors, so only a
+    # Session started WITHOUT overlay overrides exercises the real wiring.
+    @tag :tmp_dir
+    test "toggle works with the real Overlay defaults", %{tmp_dir: tmp_dir} do
+      pipe = Path.join(tmp_dir, "overlay.pipe")
+
+      start_supervised!(
+        {Voxd.Overlay, name: Voxd.Overlay, pipe_path: pipe, supervise_process: false}
+      )
+
+      recorder = start_stub_recorder(pcm: @ok_pcm)
+
+      session_opts =
+        [name: nil, recorder: recorder, recorder_mod: __MODULE__.StubRecorderClient] ++
+          Keyword.drop(recording_effectors(self()), [:overlay_show, :overlay_level])
+
+      session = start_supervised!({Session, session_opts}, id: {Session, make_ref()})
+
+      assert Session.toggle(session, "dictation") == "ok"
+      wait_for_state(session, :recording)
+      assert Process.alive?(session)
+    end
+  end
+
   describe "transcription task crash" do
+    # The mock deliberately raises; capture the expected crash report so the
+    # suite output stays clean.
+    @tag capture_log: true
     test "a crashing pipeline task shows an error and returns to idle" do
       expect(Voxd.Transcriber.Mock, :transcribe, fn _tensor, _opts ->
         raise "gpu exploded"

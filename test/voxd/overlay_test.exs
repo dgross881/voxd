@@ -134,7 +134,13 @@ defmodule Voxd.OverlayTest do
     end
   end
 
+  # The reader `cat` exits on its own when the writer closes the FIFO (EOF), so
+  # the port may die between any liveness check and the close — closing a dead
+  # port raises ArgumentError. Treat it as already stopped.
   defp stop_reader(port) do
-    if Port.info(port), do: Port.close(port)
+    Port.close(port)
+    :ok
+  rescue
+    ArgumentError -> :ok
   end
 end

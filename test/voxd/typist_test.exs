@@ -3,10 +3,19 @@ defmodule Voxd.TypistTest do
 
   alias Voxd.Typist
 
+  # The options System.cmd/3 actually accepts. The production bug "invalid
+  # option :input" slipped through because the stub runner accepted anything;
+  # validating here keeps the stub honest about the System.cmd/3 contract.
+  @system_cmd_opts [:into, :lines, :cd, :env, :arg0, :stderr_to_stdout, :parallelism, :use_stdio]
+
   setup do
     test_pid = self()
 
     runner = fn cmd, args, opts ->
+      for {key, _value} <- opts do
+        assert key in @system_cmd_opts, "System.cmd/3 does not support option #{inspect(key)}"
+      end
+
       send(test_pid, {:cmd, cmd, args, opts})
       {"", 0}
     end
@@ -20,8 +29,7 @@ defmodule Voxd.TypistTest do
     test "single line: wl-copy, sleep 500, one type, no ENTER", ctx do
       Typist.type("hello world", runner: ctx.runner, sleeper: ctx.sleeper)
 
-      assert_received {:cmd, "wl-copy", ["--"], wl_opts}
-      assert Keyword.get(wl_opts, :input) == "hello world"
+      assert_received {:cmd, "wl-copy", ["--", "hello world"], []}
 
       assert_received {:slept, 500}
 
@@ -35,7 +43,7 @@ defmodule Voxd.TypistTest do
     test "multi line: type/ENTER interleaved in exact order", ctx do
       Typist.type("one\ntwo\nthree", runner: ctx.runner, sleeper: ctx.sleeper)
 
-      assert_received {:cmd, "wl-copy", ["--"], _}
+      assert_received {:cmd, "wl-copy", ["--", "one\ntwo\nthree"], _}
       assert_received {:slept, 500}
 
       assert_received {:cmd, "ydotool",

@@ -66,6 +66,9 @@ defmodule Voxd.Session do
   @watcher_min_bytes 32_000
   @default_level_interval_ms 150
   @default_watcher_interval_ms 1_000
+  # Below this peak amplitude a recording is digital silence (BT warm-up zeros
+  # are exactly 0.0; real speech peaks are well above 0.01).
+  @silence_peak_threshold 0.001
   @valid_modes ~w(dictation ai)
 
   defstruct [
@@ -196,8 +199,11 @@ defmodule Voxd.Session do
     }
   end
 
-  defp default_overlay_show(state, text), do: Overlay.show(state, text)
-  defp default_overlay_level(value), do: Overlay.level(value)
+  # The server argument is explicit: Overlay.show/2 is show(server \\ __MODULE__,
+  # state), so Overlay.show(state, text) would bind `state` as the server —
+  # the daemon's first live toggle crashed exactly that way.
+  defp default_overlay_show(state, text), do: Overlay.show(Overlay, state, text)
+  defp default_overlay_level(value), do: Overlay.level(Overlay, value)
   defp default_ai_cleanup(text, config), do: Voxd.AI.cleanup(text, config)
   defp default_history_append(mode, text), do: Voxd.History.append(mode, text)
 
@@ -400,17 +406,47 @@ defmodule Voxd.Session do
 
   @spec run_pipeline(data(), String.t(), binary()) :: :pipeline_done
   defp run_pipeline(data, mode, pcm) do
+    case silent_audio?(pcm) do
+      true -> nothing_heard(data)
+      false -> transcribe_and_deliver(data, mode, pcm)
+    end
+  end
+
+  @spec transcribe_and_deliver(data(), String.t(), binary()) :: :pipeline_done
+  defp transcribe_and_deliver(data, mode, pcm) do
     {:ok, raw} = transcriber().transcribe(Nx.from_binary(pcm, :f32), serving: :final)
     deliver_transcription(data, mode, PostProcess.run(raw))
   end
 
+  # Whisper hallucinates on silence (no VAD in Bumblebee), so two guards stand
+  # between the mic and the keyboard: silent audio never reaches the GPU, and
+  # letterless output (e.g. a wall of "!") is never typed.
+  @spec silent_audio?(binary()) :: boolean()
+  defp silent_audio?(pcm), do: peak_amplitude(pcm) < @silence_peak_threshold
+
+  @spec peak_amplitude(binary()) :: float()
+  defp peak_amplitude(pcm) do
+    for <<sample::float-32-native <- pcm>>, reduce: 0.0 do
+      peak -> max(peak, abs(sample))
+    end
+  end
+
   @spec deliver_transcription(data(), String.t(), String.t()) :: :pipeline_done
-  defp deliver_transcription(data, _mode, "") do
+  defp deliver_transcription(data, mode, processed) do
+    case PostProcess.meaningful?(processed) do
+      false -> nothing_heard(data)
+      true -> deliver_meaningful(data, mode, processed)
+    end
+  end
+
+  @spec nothing_heard(data()) :: :pipeline_done
+  defp nothing_heard(data) do
     data.overlay_show.("error", "Nothing heard")
     :pipeline_done
   end
 
-  defp deliver_transcription(data, mode, processed) do
+  @spec deliver_meaningful(data(), String.t(), String.t()) :: :pipeline_done
+  defp deliver_meaningful(data, mode, processed) do
     final_text = maybe_ai_cleanup(data, mode, processed)
     data.history_append.(mode, final_text)
     data.typist_paste.(final_text)

@@ -5,7 +5,10 @@ defmodule Voxd.Typist do
 
   The sequence is:
 
-    1. `wl-copy --` with the full text on stdin (clipboard fallback for paste).
+    1. `wl-copy -- TEXT` (clipboard fallback for paste). The Python daemon fed
+       the text on stdin, but `System.cmd/3` has no `:input` option — passing
+       the text as the argument after `--` puts the identical bytes on the
+       clipboard.
     2. Sleep 500 ms so window focus settles before the first keystroke.
     3. Split the text on `"\\n"` and, per line, run
        `ydotool type --next-delay 20 --key-delay 20 -- LINE` (empty lines skip
@@ -55,7 +58,7 @@ defmodule Voxd.Typist do
 
   @spec copy_to_clipboard(String.t(), runner()) :: :ok
   defp copy_to_clipboard(text, runner) do
-    runner.("wl-copy", ["--"], input: text)
+    runner.("wl-copy", ["--", text], [])
     :ok
   end
 
