@@ -28,7 +28,10 @@ defmodule Voxd.PostProcess do
 
   @space_before_punctuation ~r/ +([.,!?;:])/
   @lowercase_after_blank_line ~r/(\n\n)([a-z])/
-  @letter_or_digit ~r/[\p{L}\p{N}]/u
+  # 10+ identical characters in a row — the silence-hallucination pattern
+  # (e.g. 250 "!" chars). Short punctuation like "..." is NOT repetitive and
+  # passes through, matching Python's `if not text.strip()` guard.
+  @repetitive_hallucination ~r/(.)\1{9,}/u
 
   @doc """
   Run the full clean-up pipeline on a raw transcription string.
@@ -53,14 +56,19 @@ defmodule Voxd.PostProcess do
   def stop_phrase?(text), do: Regex.match?(@stop_phrase, text)
 
   @doc """
-  Whether `text` contains at least one letter or digit (any script).
+  Whether `text` is usable transcription output.
 
-  Whisper hallucinates strings of pure punctuation (e.g. 250 `!` characters)
-  on silent audio; such output must be treated as "nothing heard", never
-  typed into the focused window.
+  Two conditions reject text:
+  1. Empty or whitespace-only — mirrors Python's `if not text.strip()`.
+  2. A repetitive-character hallucination run (10+ identical chars) — the
+     pattern distil-whisper emits on near-silence audio, e.g. 250 `!`
+     characters. Short punctuation like `"..."` (3 chars) passes through.
   """
   @spec meaningful?(String.t()) :: boolean()
-  def meaningful?(text), do: Regex.match?(@letter_or_digit, text)
+  def meaningful?(text) do
+    trimmed = String.trim(text)
+    trimmed != "" and not Regex.match?(@repetitive_hallucination, trimmed)
+  end
 
   @spec truncate_at_stop_phrase(String.t()) :: String.t()
   defp truncate_at_stop_phrase(text) do

@@ -168,9 +168,10 @@ defmodule Voxd.SessionTest do
   end
 
   describe "silent audio" do
-    # Whisper hallucinates on digital silence (live bug: 250 "!" chars typed
-    # into the focused window). Silent recordings must never reach the GPU.
-    test "all-zero audio shows \"Nothing heard\" without transcribing" do
+    # No silence pre-filter (matching Python daemon which has none). All-zero
+    # audio reaches Whisper, which returns empty string; meaningful? rejects it.
+    test "all-zero audio shows \"Nothing heard\" via meaningful? guard" do
+      final_transcribe("")
       silent_pcm = :binary.copy(<<0.0::float-32-native>>, 8_000)
       recorder = start_stub_recorder(pcm: silent_pcm)
       session = start_session(recorder)

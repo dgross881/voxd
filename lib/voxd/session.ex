@@ -66,9 +66,6 @@ defmodule Voxd.Session do
   @watcher_min_bytes 32_000
   @default_level_interval_ms 150
   @default_watcher_interval_ms 1_000
-  # Below this peak amplitude a recording is digital silence (BT warm-up zeros
-  # are exactly 0.0; real speech peaks are well above 0.01).
-  @silence_peak_threshold 0.001
   @valid_modes ~w(dictation ai)
 
   defstruct [
@@ -406,29 +403,31 @@ defmodule Voxd.Session do
 
   @spec run_pipeline(data(), String.t(), binary()) :: :pipeline_done
   defp run_pipeline(data, mode, pcm) do
-    case silent_audio?(pcm) do
-      true -> nothing_heard(data)
-      false -> transcribe_and_deliver(data, mode, pcm)
-    end
+    transcribe_and_deliver(data, mode, pcm)
   end
 
   @spec transcribe_and_deliver(data(), String.t(), binary()) :: :pipeline_done
   defp transcribe_and_deliver(data, mode, pcm) do
-    {:ok, raw} = transcriber().transcribe(Nx.from_binary(pcm, :f32), serving: :final)
+    {:ok, raw} = transcriber().transcribe(pcm_to_tensor(pcm), serving: :final)
+    Logger.debug("whisper raw output: #{inspect(raw)}")
     deliver_transcription(data, mode, PostProcess.run(raw))
   end
 
-  # Whisper hallucinates on silence (no VAD in Bumblebee), so two guards stand
-  # between the mic and the keyboard: silent audio never reaches the GPU, and
-  # letterless output (e.g. a wall of "!") is never typed.
-  @spec silent_audio?(binary()) :: boolean()
-  defp silent_audio?(pcm), do: peak_amplitude(pcm) < @silence_peak_threshold
+  # Build a sanitized Nx tensor from raw f32 PCM bytes. USB mic hardware can
+  # produce NaN/Inf samples in the first few frames while the clock stabilises;
+  # feeding those into XLA crashes the Nx.Serving process. Replace with 0.0.
+  @spec pcm_to_tensor(binary()) :: Nx.Tensor.t()
+  defp pcm_to_tensor(pcm) do
+    sanitized =
+      for <<s::float-32-native <- pcm>>, into: <<>> do
+        if s == s and abs(s) <= 3.4028235e38 do
+          <<s::float-32-native>>
+        else
+          <<0.0::float-32-native>>
+        end
+      end
 
-  @spec peak_amplitude(binary()) :: float()
-  defp peak_amplitude(pcm) do
-    for <<sample::float-32-native <- pcm>>, reduce: 0.0 do
-      peak -> max(peak, abs(sample))
-    end
+    Nx.from_binary(sanitized, :f32)
   end
 
   @spec deliver_transcription(data(), String.t(), String.t()) :: :pipeline_done
@@ -441,6 +440,7 @@ defmodule Voxd.Session do
 
   @spec nothing_heard(data()) :: :pipeline_done
   defp nothing_heard(data) do
+    Logger.warning("nothing heard: audio was silent or whisper output was empty")
     data.overlay_show.("error", "Nothing heard")
     :pipeline_done
   end

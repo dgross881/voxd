@@ -86,13 +86,25 @@ defmodule Voxd.PostProcessTest do
       assert PostProcess.meaningful?("привет ")
     end
 
-    test "punctuation-only hallucination is not meaningful" do
+    test "empty string is not meaningful" do
+      refute PostProcess.meaningful?("")
+    end
+
+    test "whitespace-only is not meaningful" do
+      refute PostProcess.meaningful?("   ")
+    end
+
+    test "repetitive-character hallucination run is not meaningful" do
+      # 10+ identical chars in a row = silence hallucination pattern
+      refute PostProcess.meaningful?(String.duplicate("!", 80) <> " ")
       refute PostProcess.meaningful?(String.duplicate("!", 250) <> " ")
     end
 
-    test "whitespace and mixed punctuation are not meaningful" do
-      refute PostProcess.meaningful?("  ... !!! ??? ")
-      refute PostProcess.meaningful?("")
+    test "short punctuation passes through (Python compat)" do
+      # Python guard is `if not text.strip()` — "..." is not empty so it passes.
+      # Whisper emits "..." on low-SNR real speech; we should type it, not drop it.
+      assert PostProcess.meaningful?("...")
+      assert PostProcess.meaningful?(". . .")
     end
   end
 
