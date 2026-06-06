@@ -30,6 +30,9 @@ defmodule Voxd.Transcriber.Bumblebee do
   @watcher_max_new_tokens 24
   @final_chunk_num_seconds 30
 
+  @final_serving_name Voxd.Serving.Final
+  @watcher_serving_name Voxd.Serving.Watcher
+
   @typedoc "The loaded model bundle shared by both servings."
   @type model_bundle :: %{
           model_info: map(),
@@ -101,21 +104,42 @@ defmodule Voxd.Transcriber.Bumblebee do
   end
 
   @doc """
-  Runs `serving` on a 1-D 16 kHz mono `f32` audio tensor and returns the
-  joined, trimmed transcription text.
+  The registered process name of the final-pass serving (`#{inspect(@final_serving_name)}`).
+  """
+  @spec final_serving_name() :: module()
+  def final_serving_name, do: @final_serving_name
 
-  Pass the serving handle via `opts[:serving]` (an `Nx.Serving` struct for
-  inline `run/2`, or a registered process name for `batched_run/2`).
+  @doc """
+  The registered process name of the watcher serving (`#{inspect(@watcher_serving_name)}`).
+  """
+  @spec watcher_serving_name() :: module()
+  def watcher_serving_name, do: @watcher_serving_name
+
+  @doc """
+  Runs the requested serving on a 1-D 16 kHz mono `f32` audio tensor and returns
+  the joined, trimmed transcription text.
+
+  `opts[:serving]` selects the serving:
+
+    * `:final` / `:watcher` — resolve to the named `Nx.Serving` process started
+      by `Voxd.Transcriber.ServingLoader` and run via `Serving.batched_run/2`
+      (the daemon path).
+    * an `%Nx.Serving{}` struct — run inline via `Serving.run/2` (the benchmark
+      path, which builds servings directly without the supervision tree).
   """
   @impl Voxd.Transcriber
   @spec transcribe(Nx.Tensor.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def transcribe(audio, opts) do
-    serving = Keyword.fetch!(opts, :serving)
-    result = Serving.run(serving, audio)
+    result = run_serving(Keyword.fetch!(opts, :serving), audio)
     {:ok, join_chunks(result)}
   rescue
     error -> {:error, error}
   end
+
+  @spec run_serving(:final | :watcher | Serving.t(), Nx.Tensor.t()) :: map()
+  defp run_serving(:final, audio), do: Serving.batched_run(@final_serving_name, audio)
+  defp run_serving(:watcher, audio), do: Serving.batched_run(@watcher_serving_name, audio)
+  defp run_serving(%Serving{} = serving, audio), do: Serving.run(serving, audio)
 
   @doc """
   The persistent XLA compilation-cache directory (`~/.cache/voxd/xla`),

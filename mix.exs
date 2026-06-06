@@ -13,7 +13,18 @@ defmodule Voxd.MixProject do
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
-      deps: deps()
+      deps: deps(),
+      releases: releases()
+    ]
+  end
+
+  # `rel/env.sh.eex` exports the GPU env (CUDA libs from pip, XLA data dir) and
+  # BUMBLEBEE_OFFLINE so the released daemon never needs the network.
+  defp releases do
+    [
+      voxd: [
+        include_executables_for: [:unix]
+      ]
     ]
   end
 
