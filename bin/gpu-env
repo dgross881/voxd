@@ -1,8 +1,10 @@
 #!/bin/sh
 # Source or prefix-run this to give the BEAM access to the GPU.
-# CUDA libs come from pip (no system CUDA); ptxas comes from torch.
+# CUDA libs come from pip (no system CUDA). XLA needs a "CUDA data dir" with
+# bin/ptxas (from torch) and nvvm/libdevice/libdevice.10.bc (from triton);
+# ~/.cache/voxd/cuda-data-dir holds symlinks to both in the layout XLA scans.
 # Usage: bin/gpu-env mix run bench/transcribe_bench.exs
 NVIDIA_LIBS="$(ls -d "$HOME"/.local/lib/python3.14/site-packages/nvidia/*/lib | tr '\n' ':')"
 export LD_LIBRARY_PATH="${NVIDIA_LIBS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export XLA_FLAGS="--xla_gpu_cuda_data_dir=$HOME/.local/lib/python3.14/site-packages/torch"
+export XLA_FLAGS="--xla_gpu_cuda_data_dir=$HOME/.cache/voxd/cuda-data-dir"
 exec "$@"
