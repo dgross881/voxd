@@ -2,8 +2,7 @@ defmodule Voxd.History do
   @moduledoc """
   Append-only transcription history stored at `~/.local/share/voxd/history.jsonl`.
 
-  Each
-  line is `{"ts": <ISO8601 local naive seconds>, "mode": mode, "text": text}`.
+  Each line is `{"ts": <ISO8601 local naive seconds>, "mode": mode, "text": text}`.
   `read/1` returns the last `n` entries; `n <= 0` or a missing file yields an
   empty list and blank lines are skipped.
   """

@@ -181,8 +181,8 @@ defmodule Voxd.SessionTest do
       assert Session.toggle(session, "dictation") == "ok"
 
       assert_receive {:overlay, "error", "Nothing heard"}
-      refute_received {:paste, _}
-      refute_received {:history, _, _}
+      refute_receive {:paste, _}, 50
+      refute_receive {:history, _, _}, 50
       wait_for_status(session, "idle")
     end
   end
@@ -198,8 +198,8 @@ defmodule Voxd.SessionTest do
       assert Session.toggle(session, "dictation") == "ok"
 
       assert_receive {:overlay, "error", "Nothing heard"}
-      refute_received {:paste, _}
-      refute_received {:history, _, _}
+      refute_receive {:paste, _}, 50
+      refute_receive {:history, _, _}, 50
       wait_for_status(session, "idle")
     end
   end

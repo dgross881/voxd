@@ -58,6 +58,10 @@ defmodule Voxd.PostProcess do
   @doc """
   Whether `text` is usable transcription output.
 
+  Expects post-processed text (i.e. the output of `run/1`, which appends a
+  trailing space). `String.trim/1` handles the trailing space so raw Whisper
+  output also works, but the contract is post-processed.
+
   Two conditions reject text:
   1. Empty or whitespace-only — mirrors Python's `if not text.strip()`.
   2. A repetitive-character hallucination run (10+ identical chars) — the

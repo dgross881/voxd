@@ -398,12 +398,7 @@ defmodule Voxd.Session do
   @spec spawn_pipeline(data(), binary()) :: Task.t()
   defp spawn_pipeline(data, pcm) do
     mode = data.mode
-    Task.async(fn -> run_pipeline(data, mode, pcm) end)
-  end
-
-  @spec run_pipeline(data(), String.t(), binary()) :: :pipeline_done
-  defp run_pipeline(data, mode, pcm) do
-    transcribe_and_deliver(data, mode, pcm)
+    Task.async(fn -> transcribe_and_deliver(data, mode, pcm) end)
   end
 
   @spec transcribe_and_deliver(data(), String.t(), binary()) :: :pipeline_done
@@ -420,22 +415,20 @@ defmodule Voxd.Session do
   defp pcm_to_tensor(pcm) do
     sanitized =
       for <<s::float-32-native <- pcm>>, into: <<>> do
-        if s == s and abs(s) <= 3.4028235e38 do
-          <<s::float-32-native>>
-        else
-          <<0.0::float-32-native>>
-        end
+        if finite?(s), do: <<s::float-32-native>>, else: <<0.0::float-32-native>>
       end
 
     Nx.from_binary(sanitized, :f32)
   end
 
+  # IEEE-754: NaN != itself; Inf exceeds max finite float.
+  defp finite?(s), do: s == s and abs(s) <= 3.4028235e38
+
   @spec deliver_transcription(data(), String.t(), String.t()) :: :pipeline_done
   defp deliver_transcription(data, mode, processed) do
-    case PostProcess.meaningful?(processed) do
-      false -> nothing_heard(data)
-      true -> deliver_meaningful(data, mode, processed)
-    end
+    if PostProcess.meaningful?(processed),
+      do: deliver_meaningful(data, mode, processed),
+      else: nothing_heard(data)
   end
 
   @spec nothing_heard(data()) :: :pipeline_done

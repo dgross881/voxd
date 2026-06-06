@@ -94,9 +94,11 @@ defmodule Voxd.PostProcessTest do
       refute PostProcess.meaningful?("   ")
     end
 
-    test "repetitive-character hallucination run is not meaningful" do
-      # 10+ identical chars in a row = silence hallucination pattern
+    test "80-char repetition is not meaningful" do
       refute PostProcess.meaningful?(String.duplicate("!", 80) <> " ")
+    end
+
+    test "250-char repetition is not meaningful" do
       refute PostProcess.meaningful?(String.duplicate("!", 250) <> " ")
     end
 
