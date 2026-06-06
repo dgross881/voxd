@@ -1,3 +1,8 @@
+# XLA_TARGET cannot be inferred on this machine (no nvcc on PATH) and xla
+# silently falls back to the CPU archive, swapping out the CUDA build.
+# Pin it here so every mix invocation links exla against cuda13.
+System.put_env("XLA_TARGET", System.get_env("XLA_TARGET", "cuda13"))
+
 defmodule Voxd.MixProject do
   use Mix.Project
 
