@@ -36,7 +36,9 @@ defmodule Voxd.MixProject do
       {:muontrap, "~> 1.8"},
       {:req, "~> 0.5"},
       {:toml, "~> 0.7"},
-      {:mox, "~> 1.2", only: :test}
+      {:mox, "~> 1.2", only: :test},
+      # Req.Test's plug-stub mode needs Plug present; test-only.
+      {:plug, "~> 1.0", only: :test}
     ]
   end
 end
