@@ -199,8 +199,12 @@ defmodule Voxd.Session do
 
   # --- callbacks -------------------------------------------------------------
 
+  # :state_enter gives one place to log every transition: gen_statem calls the
+  # target state's function with `:enter` whenever the state actually changes,
+  # so `idle → acquiring → recording → transcribing → idle` is traceable in
+  # /tmp/voxd.log without scattering log lines across the transition sites.
   @impl :gen_statem
-  def callback_mode, do: :state_functions
+  def callback_mode, do: [:state_functions, :state_enter]
 
   @impl :gen_statem
   def init(opts) do
@@ -241,6 +245,8 @@ defmodule Voxd.Session do
   # --- :idle -----------------------------------------------------------------
 
   @doc false
+  def idle(:enter, old_state, _data), do: log_transition(old_state, :idle)
+
   def idle({:call, from}, {:toggle, mode}, data) do
     overlay(data, "recording", mode)
     started = start_acquire(data, mode)
@@ -255,6 +261,8 @@ defmodule Voxd.Session do
   # --- :acquiring ------------------------------------------------------------
 
   @doc false
+  def acquiring(:enter, old_state, _data), do: log_transition(old_state, :acquiring)
+
   # Acquire succeeded: start metering + watcher and begin recording.
   def acquiring(:info, {ref, :ok}, %{acquire_task: %{ref: ref}} = data) do
     Process.demonitor(ref, [:flush])
@@ -294,6 +302,8 @@ defmodule Voxd.Session do
   # --- :recording ------------------------------------------------------------
 
   @doc false
+  def recording(:enter, old_state, _data), do: log_transition(old_state, :recording)
+
   def recording({:call, from}, {:toggle, _mode}, data), do: finish_recording(from, data)
 
   def recording(:internal, :stop_phrase, data), do: finish_recording(nil, data)
@@ -340,6 +350,8 @@ defmodule Voxd.Session do
   # --- :transcribing ---------------------------------------------------------
 
   @doc false
+  def transcribing(:enter, old_state, _data), do: log_transition(old_state, :transcribing)
+
   # A toggle during transcription starts a fresh recording (the running pipeline
   # keeps going and pastes when done) — matching the Python daemon.
   def transcribing({:call, from}, {:toggle, mode}, data) do
@@ -615,4 +627,15 @@ defmodule Voxd.Session do
 
   @spec transcriber() :: module()
   defp transcriber, do: Application.fetch_env!(:voxd, :transcriber)
+
+  # gen_statem fires `:enter` for the initial state too (old == new); only log a
+  # real transition. `:keep_state_and_data` is the required return for an enter
+  # event — it changes nothing, the logging is the whole point.
+  @spec log_transition(atom(), atom()) :: :keep_state_and_data
+  defp log_transition(same, same), do: :keep_state_and_data
+
+  defp log_transition(old_state, new_state) do
+    Logger.debug("session: #{old_state} -> #{new_state}")
+    :keep_state_and_data
+  end
 end

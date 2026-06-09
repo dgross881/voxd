@@ -1,6 +1,7 @@
 defmodule Voxd.SessionTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
   import Mox
 
   alias Voxd.Session
@@ -542,6 +543,22 @@ defmodule Voxd.SessionTest do
       assert_receive {:paste, "verbatim text"}
       refute_received {:history, _, _}
       refute_received {:ai, _}
+    end
+  end
+
+  describe "state-change logging" do
+    test "each state transition is logged at debug level" do
+      recorder = start_stub_recorder(pcm: @ok_pcm)
+      session = start_session(recorder)
+
+      log =
+        capture_log([level: :debug], fn ->
+          assert Session.toggle(session, "dictation") == "ok"
+          wait_for_state(session, :recording)
+        end)
+
+      assert log =~ "session: idle -> acquiring"
+      assert log =~ "session: acquiring -> recording"
     end
   end
 

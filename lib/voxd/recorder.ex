@@ -196,6 +196,13 @@ defmodule Voxd.Recorder do
     {:reply, :ok, state}
   end
 
+  # NOTE: this clause blocks the GenServer for up to ~2 s — `acquire/1` runs the
+  # spawn retries (Process.sleep) and the warm-up receive loop inline, so no
+  # other call (:level, :tail, :stop) is answered until the mic is live. That is
+  # safe only because of a single-caller invariant: the Session calls `start/1`
+  # from its acquire Task and starts the level/watcher timers (the other callers)
+  # only after this returns :ok. A second concurrent caller would queue behind
+  # warm-up. Keep that invariant if you add callers.
   def handle_call(:start, _from, state) do
     case acquire(state) do
       {:ok, acquired_state} -> {:reply, :ok, acquired_state}
