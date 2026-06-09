@@ -15,7 +15,8 @@ defmodule Voxd.Application do
       │   ├── Voxd.Session         (the state machine — the daemon's heart)
       │   └── Voxd.Recorder        (the mic; gets a graceful shutdown, never brutal)
       ├── Voxd.CtlSocket           (the voxctl socket; permanent — always restarted)
-      └── Voxd.Transcriber.ServingLoader (one-shot background model loader)
+      ├── Voxd.Transcriber.ServingLoader (one-shot background model loader)
+      └── Voxd.Hotkey              (press-and-hold key; only if [hotkey] enabled)
 
   Two deliberate choices in that shape:
 
@@ -44,7 +45,7 @@ defmodule Voxd.Application do
 
   require Logger
 
-  alias Voxd.{CtlSocket, Overlay, Ready, Recorder, Session, SignalHandler}
+  alias Voxd.{Config, CtlSocket, Hotkey, Overlay, Ready, Recorder, Session, SignalHandler}
   alias Voxd.Transcriber.ServingLoader
 
   @serving_supervisor Voxd.ServingSupervisor
@@ -83,7 +84,28 @@ defmodule Voxd.Application do
       session_supervisor_spec(),
       {CtlSocket, ready_fun: &Ready.ready?/0},
       {ServingLoader, supervisor: @serving_supervisor}
+    ] ++ hotkey_child()
+  end
+
+  # The press-and-hold hotkey is opt-in: only started when config.toml has
+  # `[hotkey] enabled = true`. Started after Session so the toggle target exists.
+  @spec hotkey_child() :: [{module(), keyword()}]
+  defp hotkey_child do
+    case Config.load()["hotkey"] do
+      %{"enabled" => true} = hotkey_config -> [{Hotkey, hotkey_opts(hotkey_config)}]
+      _ -> []
+    end
+  end
+
+  @spec hotkey_opts(map()) :: keyword()
+  defp hotkey_opts(hotkey_config) do
+    [
+      device_name: hotkey_config["device_name"],
+      keycode: hotkey_config["keycode"],
+      hold_ms: hotkey_config["hold_ms"],
+      mode: hotkey_config["mode"]
     ]
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
   end
 
   # rest_for_one: Session before Recorder, so a Session crash restarts Recorder

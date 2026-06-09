@@ -8,3 +8,23 @@ model = "deepseek-r1:14b"
 
 # Base URL of your Ollama instance.
 ollama_url = "http://localhost:11434"
+
+# Press-and-hold hotkey, read directly from the keyboard (evdev), so it works
+# on Wayland and can require a deliberate hold. Off unless enabled = true.
+# Requires the voxd user to be in the `input` group.
+[hotkey]
+enabled = false
+
+# Exact kernel device name to read (see: cat /sys/class/input/event*/device/name).
+# With input-remapper in the path, use its *forwarded* device.
+device_name = "input-remapper Keychron Keychron K7 forwarded"
+
+# evdev key code to watch (464 = KEY_FN). Discover yours with `libinput
+# debug-events --show-keycodes`.
+keycode = 464
+
+# How long (ms) the key must be held before voxd toggles a recording.
+hold_ms = 1000
+
+# Which mode the hold triggers: "dictation" or "ai".
+mode = "dictation"
