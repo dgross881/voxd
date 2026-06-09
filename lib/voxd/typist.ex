@@ -1,25 +1,36 @@
 defmodule Voxd.Typist do
   @moduledoc """
-  Types transcribed text into the focused window, a 1:1 port of the Python
-  daemon's typist (`daemon.py:229-253`).
+  Types the transcribed text into whatever window you have focused, as if
+  you had typed it yourself. A 1:1 port of the Python daemon's typist
+  (`daemon.py:229-253`).
 
-  The sequence is:
+  `type/2` works in three steps:
 
-    1. `wl-copy -- TEXT` (clipboard fallback for paste). The Python daemon fed
-       the text on stdin, but `System.cmd/3` has no `:input` option — passing
-       the text as the argument after `--` puts the identical bytes on the
-       clipboard.
-    2. Sleep 500 ms so window focus settles before the first keystroke.
-    3. Split the text on `"\\n"` and, per line, run
-       `ydotool type --next-delay 20 --key-delay 20 -- LINE` (empty lines skip
-       the `type` call). Between consecutive lines press ENTER with
-       `ydotool key KEY_ENTER`; on a nonzero exit retry `ydotool key KEY_RETURN`.
+    1. **Copy to clipboard first** (`wl-copy -- TEXT`) as a safety net — if
+       the simulated typing goes wrong, the text is still one paste away.
+       The Python daemon fed the text on stdin; `System.cmd/3` has no
+       `:input` option, so the text rides as the argument after `--` —
+       identical bytes either way.
+    2. **Wait half a second** so window focus settles before the first
+       keystroke lands.
+    3. **Type line by line** with `ydotool type --next-delay 20
+       --key-delay 20 -- LINE`, pressing ENTER between lines (empty lines
+       skip the typing and just get the ENTER). If `KEY_ENTER` fails,
+       `KEY_RETURN` is tried as a fallback.
 
-  Every `ydotool` invocation carries `YDOTOOL_SOCKET=/run/user/<uid>/.ydotool_socket`.
-  The uid is resolved once via `id -u` and cached.
+  Every `ydotool` call carries `YDOTOOL_SOCKET=/run/user/<uid>/.ydotool_socket`
+  so it can find the ydotool daemon; the user id is looked up once with
+  `id -u` and remembered.
 
-  The command runner and the sleep function are injectable so tests can assert
-  the exact argv sequence without spawning real binaries or waiting 500 ms.
+  The command runner and the sleep function are both injectable, so tests —
+  and this doctest — can capture the exact commands instead of pressing real
+  keys or waiting the real 500 ms:
+
+      iex> Voxd.Typist.type("hello",
+      ...>   runner: fn _cmd, _args, _opts -> {"", 0} end,
+      ...>   sleeper: fn _ms -> :ok end
+      ...> )
+      :ok
   """
 
   require Logger
@@ -38,7 +49,9 @@ defmodule Voxd.Typist do
   @type sleeper :: (non_neg_integer() -> any())
 
   @doc """
-  Type `text` into the focused window.
+  Type `text` into the focused window: clipboard copy, focus-settle wait,
+  then simulated keystrokes line by line (see the module docs for the full
+  sequence).
 
   Options:
 

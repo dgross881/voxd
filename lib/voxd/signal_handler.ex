@@ -1,18 +1,25 @@
 defmodule Voxd.SignalHandler do
   @moduledoc """
-  `:gen_event` handler swapped into `:erl_signal_server` so SIGTERM/SIGINT run
-  voxd's cleanup contract instead of the BEAM's default `init:stop/0`.
+  Makes sure voxd cleans up after itself when the system asks it to quit
+  (a `kill` command, a systemd stop, a logout).
 
-  On either signal it releases the mic (`Voxd.Session.cancel/0`, which tears down
-  the `Recorder`), idles the overlay, removes the runtime files
-  (`/tmp/voxd.{sock,pid}` and `/tmp/voxd-ready`), then `System.stop(0)` for an
-  orderly OTP shutdown — strictly more graceful than the Python daemon's
-  `os._exit`. Any other signal is delegated to the BEAM's default behaviour
-  (sigquit halts; everything else is ignored), matching `:erl_signal_handler`.
+  This handler is swapped into the BEAM's signal server so a SIGTERM or
+  SIGINT runs voxd's own shutdown routine instead of the default abrupt
+  stop. In order, the routine:
 
-  The cleanup itself (`cleanup/1`) is a pure-effect function with injectable
-  collaborators and runtime-file paths so it can be unit-tested without raising a
-  signal or touching the real mic, overlay, and `/tmp` files.
+  1. releases the microphone (`Voxd.Session.cancel/0`, which tears down the
+     `Recorder` — so your Bluetooth headset isn't left stuck in headset mode),
+  2. clears the overlay back to idle,
+  3. removes the runtime files (`/tmp/voxd.{sock,pid}` and `/tmp/voxd-ready`),
+  4. stops the VM in an orderly way with `System.stop(0)` — strictly more
+     graceful than the Python daemon's `os._exit`.
+
+  Any other signal gets the BEAM's standard treatment (SIGQUIT halts;
+  everything else is ignored), matching `:erl_signal_handler`.
+
+  The cleanup itself (`cleanup/1`) takes injectable collaborators and file
+  paths, so it can be unit-tested without sending a real signal or touching
+  the real mic, overlay, and `/tmp` files.
   """
 
   @behaviour :gen_event
@@ -24,21 +31,22 @@ defmodule Voxd.SignalHandler do
   @runtime_files ["/tmp/voxd.sock", "/tmp/voxd.pid", Voxd.Ready.default_ready_file()]
 
   @doc """
-  The runtime files removed on shutdown (`/tmp/voxd.{sock,pid}` and the ready
-  file).
+  The runtime files deleted on shutdown (`/tmp/voxd.{sock,pid}` and the
+  ready file).
   """
   @spec runtime_files() :: [String.t()]
   def runtime_files, do: @runtime_files
 
   @doc """
-  Run the shutdown cleanup: cancel the session (releasing the mic), idle the
-  overlay, and remove the runtime files.
+  Run the shutdown cleanup: release the mic, clear the overlay, and delete
+  the runtime files. Each step that fails is logged and skipped — cleanup
+  always finishes.
 
   Options (all injectable for tests):
 
-    * `:session_cancel` — 0-arity fn; default `&Voxd.Session.cancel/0`.
-    * `:overlay_idle` — 0-arity fn; default idles `Voxd.Overlay`.
-    * `:runtime_files` — paths to remove; default `runtime_files/0`.
+    * `:session_cancel` — zero-argument function; default `&Voxd.Session.cancel/0`.
+    * `:overlay_idle` — zero-argument function; default idles `Voxd.Overlay`.
+    * `:runtime_files` — paths to delete; default `runtime_files/0`.
   """
   @spec cleanup(keyword()) :: :ok
   def cleanup(opts \\ []) do

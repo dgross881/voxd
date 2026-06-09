@@ -1,16 +1,31 @@
 defmodule Voxctl.CLI do
   @moduledoc """
-  Command-line entry point for `voxctl`, the voxd control client.
+  The `voxctl` command itself — the little tool your hotkey runs to talk
+  to the voxd daemon.
 
-  Subcommands: `toggle [--mode dictation|ai]`, `cancel`, `status`, and
-  `history [--n N] [--copy N]`. `run/1` is pure-ish — it returns
-  `{output, exit_code}` so the behaviour is testable without `System.halt/1`;
-  `main/1` is a thin wrapper that prints the output to the right stream and
-  halts. Output on exit 0 goes to stdout, on a non-zero exit to stderr.
+      voxctl toggle                 # start/stop a dictation recording
+      voxctl toggle --mode ai       # same, but the text is AI-polished
+      voxctl cancel                 # abandon the current recording
+      voxctl status                 # "loading", "idle", or "recording"
+      voxctl history --n 10         # show the last 10 transcriptions
+      voxctl history --copy 3       # re-type entry #3 from that listing
 
-  Socket path defaults to `/tmp/voxd.sock` (`VOXD_SOCKET` overrides); the
-  history file defaults to `~/.local/share/voxd/history.jsonl`. Both are
-  overridable via opts for testing.
+  `run/2` does all the work and returns `{output, exit_code}` — it never
+  halts, so it's directly testable (and doctestable):
+
+      iex> Voxctl.CLI.run(["bogus"])
+      {"Unknown command: bogus", 1}
+
+      iex> Voxctl.CLI.run(["toggle", "--mode", "whisper-mode"])
+      {"Unknown mode: whisper-mode", 1}
+
+  `main/1` is the thin escript wrapper around it: print the output —
+  stdout on success, stderr on failure — and exit with the code.
+
+  The daemon socket defaults to `/tmp/voxd.sock` (the `VOXD_SOCKET`
+  environment variable overrides it); the history file defaults to
+  `~/.local/share/voxd/history.jsonl`. Both can be overridden via `opts`
+  for testing.
   """
 
   alias Voxctl.Client
@@ -21,8 +36,8 @@ defmodule Voxctl.CLI do
   @valid_modes ~w(dictation ai)
 
   @doc """
-  Escript entry point. Runs the parsed command, prints its output to stdout
-  (exit 0) or stderr (non-zero), and halts with the exit code.
+  Escript entry point. Runs the command, prints its output to stdout
+  (success) or stderr (failure), and exits with the matching code.
   """
   @spec main([String.t()]) :: no_return()
   def main(argv) do
@@ -32,9 +47,12 @@ defmodule Voxctl.CLI do
   end
 
   @doc """
-  Run the parsed command and return `{output, exit_code}`. `opts` may override
-  `:socket_path` and `:history_path` (used by tests); they default to the
-  daemon socket and the shared history file.
+  Run a command and return `{output, exit_code}` without printing or
+  halting. `opts` may override `:socket_path` and `:history_path` (used by
+  tests); they default to the daemon socket and the shared history file.
+
+      iex> Voxctl.CLI.run([])
+      {"Usage: voxctl <toggle [--mode dictation|ai] | cancel | status | history [--n N] [--copy N]>", 1}
   """
   @spec run([String.t()], keyword()) :: {String.t(), non_neg_integer()}
   def run(argv, opts \\ [])

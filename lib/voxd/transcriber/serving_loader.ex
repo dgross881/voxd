@@ -1,18 +1,25 @@
 defmodule Voxd.Transcriber.ServingLoader do
   @moduledoc """
-  A one-shot Task (child of the app tree) that brings the transcription servings
-  online **after** boot, so the control socket can accept connections and report
-  `"loading"` the whole time the ~1.5 GB model loads and the two XLA graphs
-  compile.
+  Loads the speech model in the background after the daemon boots, so voxd
+  answers immediately instead of making you wait out the slow model load.
 
-  It loads the model bundle (`Voxd.Transcriber.Bumblebee.load/0`), builds the
-  final and watcher servings, starts each as a named `Nx.Serving` process
-  (`Voxd.Serving.Final` / `Voxd.Serving.Watcher`, `batch_size: 1`) under the
-  app's serving `DynamicSupervisor`, then `Voxd.Ready.mark_ready/0` so `status`
-  flips to `"idle"` and `/tmp/voxd-ready` appears.
+  Loading Whisper and compiling its GPU programs takes several seconds (the
+  very first boot, which also compiles from scratch, takes longer). If that
+  happened during startup, `voxctl status` would hang. Instead the daemon
+  boots fully — socket listening, overlay up — and this one-shot Task does
+  the slow part on the side:
 
-  The Task is `restart: :temporary` in the tree: a load failure must not take the
-  daemon down. It logs and leaves readiness `false` (status stays `"loading"`).
+  1. Load the model bundle (`Voxd.Transcriber.Bumblebee.load/0`).
+  2. Build the final and watcher servings and start each as a named process
+     (`Voxd.Serving.Final` / `Voxd.Serving.Watcher`) under the app's serving
+     supervisor.
+  3. Call `Voxd.Ready.mark_ready/0` — `status` flips from `"loading"` to
+     `"idle"` and `/tmp/voxd-ready` appears.
+
+  The Task is `restart: :temporary` in the tree: if the load fails, the
+  daemon must stay up. The failure is logged and readiness simply never
+  flips — `status` keeps saying `"loading"`, which is your cue to check
+  `/tmp/voxd.log`.
   """
 
   require Logger
@@ -23,8 +30,8 @@ defmodule Voxd.Transcriber.ServingLoader do
   @batch_size 1
 
   @doc """
-  Child spec for the loader Task. `:temporary` — a model-load failure must not
-  restart-loop or crash the daemon. `opts` are forwarded to `run/1`.
+  Child spec for the loader Task. `:temporary` — a model-load failure must
+  not restart-loop or take the daemon down. `opts` are forwarded to `run/1`.
   """
   @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(opts) do
@@ -37,14 +44,15 @@ defmodule Voxd.Transcriber.ServingLoader do
   end
 
   @doc """
-  Load the model, start both servings under `supervisor`, and mark ready.
+  Load the model, start both servings under `supervisor`, and declare the
+  daemon ready. Never raises — a failure is logged and readiness stays off.
 
   Options:
 
     * `:supervisor` — the serving `DynamicSupervisor` (default
       `Voxd.ServingSupervisor`).
-    * `:ready_file` — path passed to `Voxd.Ready.mark_ready/1` (default the real
-      ready file).
+    * `:ready_file` — path passed to `Voxd.Ready.mark_ready/1` (default the
+      real ready file).
   """
   @spec run(keyword()) :: :ok
   def run(opts \\ []) do

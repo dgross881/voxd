@@ -1,24 +1,30 @@
 defmodule Voxd.Transcriber.Bumblebee do
   @moduledoc """
-  Bumblebee/EXLA implementation of `Voxd.Transcriber` backed by
-  `distil-whisper/distil-large-v3`.
+  The real speech-to-text engine: Whisper (`distil-whisper/distil-large-v3`)
+  running on the GPU via Bumblebee and EXLA.
 
-  The model is loaded once into a `model_info`/featurizer/tokenizer/
-  generation-config bundle (`load/0`) and shared by **two** `Nx.Serving`s
-  built from it:
+  The model is loaded **once** (`load/0` — about 1.5 GB of weights) and then
+  shared by two separately tuned "servings" (a serving is a running,
+  compiled instance of the model ready to take requests):
 
-    * `final_serving/1` — chunked 30 s transcription for the final pass.
-    * `watcher_serving/1` — greedy with a small `max_new_tokens` cap and no
-      chunking, for the 2 s stop-phrase watcher windows.
+    * `final_serving/1` — the careful pass. Handles takes of any length by
+      processing them in 30-second chunks; used when you stop a recording.
+    * `watcher_serving/1` — the quick pass. Capped at a few output words and
+      no chunking, sized for the 2-second windows the stop-phrase watcher
+      checks every second while you talk.
 
-  Both servings reference the same weights, so the watcher adds no extra VRAM
-  (only its `generation_config` differs). Bumblebee 0.7 fixes the generation
-  strategy at serving-build time, which is why a second serving is required
-  rather than a per-call override.
+  Both servings point at the same weights, so the second one costs no extra
+  GPU memory — only its generation settings differ. (Bumblebee fixes those
+  settings when a serving is built, which is why there are two servings
+  rather than one with a per-call option.)
 
-  Input is a 1-D 16 kHz mono `f32` `Nx.Tensor` (the caller does
-  `Nx.from_binary(pcm, :f32)`). Output text is the joined-and-trimmed
-  `result.chunks`.
+  How the Session uses it:
+
+      tensor = Nx.from_binary(pcm, :f32)          # raw mic bytes → tensor
+      {:ok, text} = Bumblebee.transcribe(tensor, serving: :final)
+
+  Input is always 1-D 16 kHz mono `f32` audio. The output text is the
+  model's chunks joined together and trimmed.
   """
 
   @behaviour Voxd.Transcriber
@@ -42,11 +48,11 @@ defmodule Voxd.Transcriber.Bumblebee do
         }
 
   @doc """
-  Loads the distil-large-v3 model bundle (model, featurizer, tokenizer,
-  generation config) in `f16`.
+  Load the Whisper model bundle (weights, featurizer, tokenizer, generation
+  config) in half-precision (`f16`).
 
-  First call downloads ~1.5 GB from HuggingFace; subsequent calls read the
-  Bumblebee cache.
+  The first call ever downloads ~1.5 GB from HuggingFace; after that the
+  local Bumblebee cache is used and loading takes a few seconds.
   """
   @spec load() :: model_bundle()
   def load do
@@ -68,7 +74,8 @@ defmodule Voxd.Transcriber.Bumblebee do
   end
 
   @doc """
-  Builds the final-pass serving: chunked 30 s, English transcription, greedy.
+  Build the careful final-pass serving: English transcription in 30-second
+  chunks, so a take of any length comes out whole.
   """
   @spec final_serving(model_bundle()) :: Serving.t()
   def final_serving(bundle) do
@@ -86,8 +93,9 @@ defmodule Voxd.Transcriber.Bumblebee do
   end
 
   @doc """
-  Builds the watcher serving: greedy, `max_new_tokens: #{@watcher_max_new_tokens}`,
-  no chunking — sized for 2 s stop-phrase windows.
+  Build the quick watcher serving: output capped at
+  #{@watcher_max_new_tokens} tokens, no chunking — just enough to spot a
+  stop phrase in a 2-second window.
   """
   @spec watcher_serving(model_bundle()) :: Serving.t()
   def watcher_serving(bundle) do
@@ -116,16 +124,16 @@ defmodule Voxd.Transcriber.Bumblebee do
   def watcher_serving_name, do: @watcher_serving_name
 
   @doc """
-  Runs the requested serving on a 1-D 16 kHz mono `f32` audio tensor and returns
-  the joined, trimmed transcription text.
+  Transcribe audio (a 1-D 16 kHz mono `f32` tensor) and return the joined,
+  trimmed text. Any error comes back as `{:error, reason}` rather than
+  raising.
 
-  `opts[:serving]` selects the serving:
+  `opts[:serving]` picks which engine answers:
 
-    * `:final` / `:watcher` — resolve to the named `Nx.Serving` process started
-      by `Voxd.Transcriber.ServingLoader` and run via `Serving.batched_run/2`
-      (the daemon path).
-    * an `%Nx.Serving{}` struct — run inline via `Serving.run/2` (the benchmark
-      path, which builds servings directly without the supervision tree).
+    * `:final` / `:watcher` — the named serving processes started by
+      `Voxd.Transcriber.ServingLoader` (the daemon path).
+    * an `%Nx.Serving{}` struct — run it directly, no supervision tree
+      needed (the benchmark path).
   """
   @impl Voxd.Transcriber
   @spec transcribe(Nx.Tensor.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
@@ -142,8 +150,9 @@ defmodule Voxd.Transcriber.Bumblebee do
   defp run_serving(%Serving{} = serving, audio), do: Serving.run(serving, audio)
 
   @doc """
-  The persistent XLA compilation-cache directory (`~/.cache/voxd/xla`),
-  created if absent.
+  The directory where compiled GPU programs are cached between runs
+  (`~/.cache/voxd/xla`), created if absent. The cache is what makes the
+  second boot far faster than the first.
   """
   @spec cache_dir() :: String.t()
   def cache_dir do
@@ -153,7 +162,8 @@ defmodule Voxd.Transcriber.Bumblebee do
   end
 
   @doc """
-  The EXLA client atom from config (`:cuda` in dev, `:host` in test).
+  Where the model runs, from config: `:cuda` (the GPU) in dev/prod,
+  `:host` (the CPU) in test.
   """
   @spec client() :: atom()
   def client, do: Application.fetch_env!(:voxd, :exla_client)

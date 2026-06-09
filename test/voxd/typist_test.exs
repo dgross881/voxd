@@ -3,6 +3,8 @@ defmodule Voxd.TypistTest do
 
   alias Voxd.Typist
 
+  doctest Voxd.Typist
+
   # The options System.cmd/3 actually accepts. The production bug "invalid
   # option :input" slipped through because the stub runner accepted anything;
   # validating here keeps the stub honest about the System.cmd/3 contract.

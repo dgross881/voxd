@@ -25,3 +25,6 @@ voxd-*.tar
 
 # Plan/scratchpad files are local-only
 /.claude/
+
+# MCP server config contains a local API key
+/.mcp.json

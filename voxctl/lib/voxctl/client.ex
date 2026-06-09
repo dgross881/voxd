@@ -1,26 +1,33 @@
 defmodule Voxctl.Client do
   @moduledoc """
-  Unix-domain socket client for the voxd control protocol, ported 1:1 from the
-  Python `ctl.send_command`.
+  The wire between `voxctl` and the daemon: a tiny one-shot socket client,
+  ported 1:1 from the Python `ctl.send_command`.
 
-  Opens a one-shot connection to the daemon socket (default `/tmp/voxd.sock`,
-  overridable via the `VOXD_SOCKET` env var or an explicit path), sends
-  `command <> "\\n"`, reads one reply line, and returns it trimmed. A failure to
-  connect (daemon down) returns `{:error, :daemon_down}`.
+  Each call is one complete conversation: connect to the daemon's socket
+  (default `/tmp/voxd.sock`, overridable via the `VOXD_SOCKET` environment
+  variable or an explicit path), send one command line, read one reply
+  line, hang up, and return the reply trimmed:
+
+      Client.send_command("status", "/tmp/voxd.sock")
+      #=> {:ok, "idle"}
+
+  If the daemon isn't running, connecting fails and you get
+  `{:error, :daemon_down}` — which the CLI turns into a friendly message.
   """
 
   @default_path "/tmp/voxd.sock"
 
   @doc """
-  Resolve the socket path: the `VOXD_SOCKET` env var if set, else
-  `/tmp/voxd.sock`.
+  Resolve the socket path: the `VOXD_SOCKET` environment variable if set,
+  else `/tmp/voxd.sock`.
   """
   @spec default_path() :: String.t()
   def default_path, do: System.get_env("VOXD_SOCKET", @default_path)
 
   @doc """
-  Send `command` to the daemon at `path` and return its trimmed reply, or
-  `{:error, :daemon_down}` if the socket cannot be reached.
+  Send `command` to the daemon at `path` and return `{:ok, reply}` with the
+  trimmed reply line, or `{:error, :daemon_down}` if the socket can't be
+  reached.
   """
   @spec send_command(String.t(), String.t()) :: {:ok, String.t()} | {:error, :daemon_down}
   def send_command(command, path) do

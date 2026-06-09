@@ -3,6 +3,8 @@ defmodule Voxd.ConfigTest do
 
   alias Voxd.Config
 
+  doctest Voxd.Config
+
   @defaults %{
     "ai" => %{
       "model" => "deepseek-r1:14b",

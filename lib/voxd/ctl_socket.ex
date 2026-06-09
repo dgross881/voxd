@@ -1,31 +1,34 @@
 defmodule Voxd.CtlSocket do
   @moduledoc """
-  Unix-domain control socket for the daemon, ported 1:1 from the Python
-  `daemon.py` control loop and `ctl.py` client.
+  The daemon's front door: the local socket that `voxctl` (and your GNOME
+  keybinding) talk to. Ported 1:1 from the Python `daemon.py` control loop
+  and `ctl.py` client.
 
-  Binds `/tmp/voxd.sock` (overridable) with a line protocol and serves one
-  connection at a time from a single accept loop, exactly like the Python
-  daemon. Each connection is one-shot: the client sends one command line, the
-  socket dispatches it, replies `response <> "\\n"`, and closes.
+  It listens on `/tmp/voxd.sock` (overridable) and serves one connection at
+  a time, exactly like the Python daemon. Each connection is one-shot —
+  here's the whole conversation when you press your hotkey:
+
+      $ voxctl toggle          # client connects, sends "toggle:dictation\\n"
+      ok                       # socket replies "ok\\n" and closes
 
   ## Protocol
 
-  | Command         | Dispatch                                            |
-  |-----------------|-----------------------------------------------------|
-  | `toggle`        | `session.toggle("dictation")`                       |
-  | `toggle:MODE`   | `session.toggle(MODE)` (Session returns `"unknown"` for a bad mode) |
-  | `cancel`        | `session.cancel()`                                  |
-  | `status`        | `"loading"` until serving is ready, else `session.status()` |
-  | `retype:TEXT`   | `session.retype(TEXT)` (colons inside TEXT preserved) |
-  | anything else   | `"unknown"`                                         |
+  | Command         | What happens                                         |
+  |-----------------|------------------------------------------------------|
+  | `toggle`        | `session.toggle("dictation")`                        |
+  | `toggle:MODE`   | `session.toggle(MODE)` (Session answers `"unknown"` for a bad mode) |
+  | `cancel`        | `session.cancel()`                                   |
+  | `status`        | `"loading"` until the model is ready, then `session.status()` |
+  | `retype:TEXT`   | `session.retype(TEXT)` (colons inside TEXT survive)  |
+  | anything else   | `"unknown"`                                          |
 
   ## Injection
 
-  The Session module and the serving-readiness predicate are injectable so the
+  The Session module and the model-readiness check are injectable so the
   socket can be tested without the real `Voxd.Session` existing. `:session`
-  defaults to `Voxd.Session` (a bare module atom, so it need not be loaded at
-  compile time) and `:ready_fun` defaults to `fn -> true end` (Task 13 wires
-  the real readiness check).
+  defaults to `Voxd.Session` (a bare module atom, so it need not be loaded
+  at compile time) and `:ready_fun` defaults to `fn -> true end` (the
+  application wires the real readiness check).
   """
 
   require Logger
@@ -33,8 +36,9 @@ defmodule Voxd.CtlSocket do
   @default_path "/tmp/voxd.sock"
 
   @doc """
-  Child spec for supervision. The accept loop runs as a permanent child (F7):
-  if it ever exits the supervisor restarts it.
+  Child spec for supervision. The accept loop runs as a permanent child:
+  if it ever dies, the supervisor restarts it — the control socket must
+  always come back, or the hotkey goes dead.
   """
   @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(opts) do
@@ -49,7 +53,8 @@ defmodule Voxd.CtlSocket do
   @doc """
   Start the accept loop in a linked process. Options: `:path` (socket path,
   default `/tmp/voxd.sock`), `:session` (Session module, default
-  `Voxd.Session`), `:ready_fun` (0-arity predicate, default `fn -> true end`).
+  `Voxd.Session`), `:ready_fun` (zero-argument readiness check, default
+  `fn -> true end`).
   """
   @spec start_link(keyword()) :: {:ok, pid()}
   def start_link(opts) do

@@ -1,13 +1,20 @@
 defmodule Voxd.Config do
   @moduledoc """
-  Reads the voxd TOML config from `~/.config/voxd/config.toml`.
+  Loads voxd's settings from `~/.config/voxd/config.toml`.
 
-  The result is the built-in defaults with the user's TOML deep-merged over
-  them section-by-section: a known section's unspecified keys keep their
-  defaults, and unknown sections are added wholesale. A missing file yields
-  the defaults; a parse error raises.
+  Settings the user leaves out fall back to built-in defaults: the file is
+  merged over the defaults one section at a time, so omitting a key from a
+  section keeps that key's default, and any extra sections the user adds are
+  kept as-is. No settings file at all simply means "use the defaults" —
+  which is exactly what loading a path that doesn't exist returns:
 
-  See `priv/config.toml.example` for available options.
+      iex> Voxd.Config.load("/nonexistent/config.toml")
+      %{"ai" => %{"model" => "deepseek-r1:14b", "ollama_url" => "http://localhost:11434"}}
+
+  A file that exists but can't be parsed raises an error instead of silently
+  running with wrong settings.
+
+  See `priv/config.toml.example` for every available option.
   """
 
   @config_path Path.join([System.user_home!(), ".config", "voxd", "config.toml"])
@@ -20,14 +27,14 @@ defmodule Voxd.Config do
   }
 
   @doc """
-  Load the config from the default path (`~/.config/voxd/config.toml`).
+  Load the settings from the default path (`~/.config/voxd/config.toml`).
   """
   @spec load() :: map()
   def load, do: load(@config_path)
 
   @doc """
-  Load the config from an explicit path. Missing file → defaults; parse error
-  raises.
+  Load the settings from an explicit path. A missing file returns the
+  defaults; a file that won't parse raises.
   """
   @spec load(String.t()) :: map()
   def load(path) do

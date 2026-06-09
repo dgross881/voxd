@@ -1,45 +1,75 @@
 defmodule Voxd.Recorder do
   @moduledoc """
-  Owns the `pw-record` capture process and the microphone for the duration of a
-  recording only.
+  Listens to the microphone — but only while a recording is in progress.
 
-  The mic is acquired on `start/0` (spawning `pw-record`) and released on
-  `stop/0`/`cancel/0` (killing it). Nothing is captured between recordings, so a
-  Bluetooth headset is never held in headset (low-quality SCO) profile while
-  idle.
+  voxd grabs the microphone when a recording starts and lets it go the moment
+  the recording stops or is canceled. Nothing is captured between recordings,
+  which means a Bluetooth headset never gets stuck in its low-quality
+  "headset" (SCO) mode while you're not talking.
 
-  ## Pull-based capture
+  ## How a recording works, start to finish
 
-  Exile is demand-driven: it never pushes stdout as messages. A dedicated reader
-  process loops `Exile.Process.read/2` and `send`s `{:pcm_chunk, binary}` to this
-  GenServer, then `{:pcm_eof}` on a clean EOF or `{:pcm_error, reason}` on a read
-  error. This GenServer owns the lifecycle: it spawns and tears down both the
-  Exile process and the reader.
+      # 1. Grab the mic. This launches `pw-record`, waits out the Bluetooth
+      #    warm-up (see below), and returns once live audio is flowing:
+      :ok = Recorder.start()
+
+      # ...or, when no capture program can be started at all:
+      {:error, :no_input_device} = Recorder.start()
+
+      # 2. While recording, the Session polls the volume meter every 150 ms.
+      #    `level/0` returns the raw loudness (RMS) of the newest slice of
+      #    audio — 0.0 means silence; scaling for display is the caller's job:
+      level = Recorder.level()           # e.g. 0.041
+
+      # 3. The stop-phrase watcher grabs the last 2 seconds of audio without
+      #    interrupting the recording:
+      tail = Recorder.tail(2.0)          # raw audio bytes
+
+      # 4. Stop. The mic is released and the whole take comes back as one
+      #    binary of raw audio, warm-up silence excluded:
+      {:ok, pcm} = Recorder.stop()
+
+      # ...or throw the take away:
+      :ok = Recorder.cancel()
+
+  These walkthroughs can't run as doctests — they need a real microphone.
+  Every claim above is asserted in `test/voxd/recorder_test.exs` instead,
+  using stub capture programs (`cat`, `sh`) in place of `pw-record`.
+
+  ## How audio arrives
+
+  Exile (the library that runs `pw-record`) never sends audio on its own — it
+  waits to be asked. So a small helper process sits in a loop asking for the
+  next piece of audio and mails each piece to this server as a
+  `{:pcm_chunk, binary}` message, then `{:pcm_eof}` when the stream ends
+  cleanly or `{:pcm_error, reason}` if reading fails. This server starts and
+  tears down both the capture program and the helper.
 
   ## Warm-up
 
-  A freshly opened Bluetooth SCO link delivers ~1.1 s of digital silence before
-  real audio. `start/0` discards leading **all-zero** chunks (silence) until the
-  first chunk that contains any non-zero f32 sample — that first live chunk is
-  kept as the start of the recording. If only silence arrives before the warm-up
-  deadline, the capture is killed and respawned once; if it is still silent after
-  the second deadline the recorder proceeds best-effort (keeps collecting).
+  A freshly opened Bluetooth microphone link takes about a second to wake up,
+  and until then it delivers pure digital silence. `start/0` throws away
+  those leading all-zero pieces and keeps the first piece with real sound in
+  it as the start of the recording. If only silence arrives before the
+  deadline, the capture program is killed and restarted once; if it is still
+  silent after that, recording proceeds anyway, best-effort.
 
-  ## RMS
+  ## Volume level
 
-  Only the latest chunk is retained for metering; `level/0` computes its raw RMS
-  on demand (called at ~150 ms ticks by the Session) rather than per chunk. The
-  returned value is the raw RMS — the overlay scaling (`min(1.0, rms * 20)`) is
-  the caller's concern.
+  Only the newest slice of audio is kept for metering. `level/0` does the
+  loudness (RMS) math on demand when asked — not on every slice as it
+  arrives — so recording costs nothing extra while nobody is looking at the
+  meter. The value is raw; the overlay scaling (`min(1.0, rms * 20)`) is the
+  caller's concern.
 
-  ## Mic release (Exile caveat)
+  ## Releasing the mic (an Exile gotcha)
 
-  Exile's NIF resource destructor only closes file descriptors; it does **not**
-  kill the OS process. The mic is released exclusively via
-  `Exile.Process.await_exit/2` (graceful SIGTERM→SIGKILL ladder). This GenServer
-  traps exits so `terminate/2` runs and releases the mic on shutdown — the
-  supervisor must therefore never `:brutal_kill` it (the child spec sets a
-  non-zero `:shutdown`).
+  Killing the Elixir side does NOT kill the `pw-record` program — Exile's
+  cleanup only closes file handles. The OS process is shut down exclusively
+  via `Exile.Process.await_exit/2`, which asks politely first (SIGTERM) and
+  then forces it (SIGKILL). That cleanup runs in `terminate/2`, so the
+  supervisor must never `:brutal_kill` this server — the mic would stay
+  held. The child spec sets a non-zero `:shutdown` for exactly this reason.
   """
 
   use GenServer
@@ -69,15 +99,15 @@ defmodule Voxd.Recorder do
   @type level :: float()
 
   @doc """
-  Start the recorder GenServer.
+  Start the recorder server.
 
   Options:
     * `:name` — registered name (default `#{inspect(__MODULE__)}`).
-    * `:command` — argv list run in place of `pw-record` (default the
-      `pw-record` capture command); injected so tests substitute stub binaries.
-    * `:warmup_deadline_ms` — per-attempt warm-up budget (default
-      `#{@default_warmup_deadline_ms}`).
-    * `:spawn_retry_delay_ms` — delay between spawn attempts (default
+    * `:command` — the capture command to run, as an argv list (default
+      `pw-record` at 16 kHz mono); tests substitute stub programs here.
+    * `:warmup_deadline_ms` — how long each warm-up attempt may wait for
+      live audio (default `#{@default_warmup_deadline_ms}`).
+    * `:spawn_retry_delay_ms` — pause between launch attempts (default
       `#{@default_spawn_retry_delay_ms}`).
   """
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -87,11 +117,12 @@ defmodule Voxd.Recorder do
   end
 
   @doc """
-  Acquire the mic: spawn the capture process and run warm-up.
+  Grab the microphone: launch the capture program and wait out the warm-up.
 
-  Returns `:ok` once the capture is live (or best-effort after warm-up fails to
-  see audio). Returns `{:error, :no_input_device}` if the capture binary cannot
-  be spawned after #{@spawn_attempts} attempts.
+  Returns `:ok` once live audio is flowing (or best-effort if warm-up never
+  saw any sound). Returns `{:error, :no_input_device}` if the capture
+  program could not be started after #{@spawn_attempts} attempts. Calling
+  `start/1` while already recording is harmless and returns `:ok`.
   """
   @spec start(GenServer.server()) :: :ok | {:error, :no_input_device}
   def start(server \\ __MODULE__) do
@@ -99,11 +130,11 @@ defmodule Voxd.Recorder do
   end
 
   @doc """
-  Release the mic and return the recording.
+  Release the microphone and hand back the recording.
 
-  Returns `{:ok, pcm}` with all captured chunks concatenated in capture order
-  (warm-up silence excluded), or `{:error, :not_recording}` if no capture was
-  started.
+  Returns `{:ok, pcm}` — the whole take as one binary of raw audio, in
+  order, warm-up silence excluded — or `{:error, :not_recording}` if
+  nothing was being recorded.
   """
   @spec stop(GenServer.server()) :: {:ok, binary()} | {:error, :not_recording}
   def stop(server \\ __MODULE__) do
@@ -111,7 +142,8 @@ defmodule Voxd.Recorder do
   end
 
   @doc """
-  Release the mic and discard the recording. Always `:ok`, even when idle.
+  Release the microphone and throw the recording away. Always `:ok`, even
+  when nothing was being recorded.
   """
   @spec cancel(GenServer.server()) :: :ok
   def cancel(server \\ __MODULE__) do
@@ -119,9 +151,11 @@ defmodule Voxd.Recorder do
   end
 
   @doc """
-  Raw RMS amplitude of the latest captured chunk, `0.0` when nothing captured.
+  Current loudness: the raw RMS of the newest slice of captured audio, or
+  `0.0` when nothing has been captured yet.
 
-  Scaling for display (`min(1.0, rms * 20)`) is the caller's concern.
+  The value is unscaled — turning it into a 0-to-1 meter reading
+  (`min(1.0, rms * 20)`) is the caller's job.
   """
   @spec level(GenServer.server()) :: level()
   def level(server \\ __MODULE__) do
@@ -129,7 +163,8 @@ defmodule Voxd.Recorder do
   end
 
   @doc """
-  Whether a capture is currently live (started and not yet at EOF/error).
+  Whether a recording is currently in progress (started and the audio
+  stream hasn't ended or failed).
   """
   @spec recording?(GenServer.server()) :: boolean()
   def recording?(server \\ __MODULE__) do
@@ -137,12 +172,13 @@ defmodule Voxd.Recorder do
   end
 
   @doc """
-  The last `seconds` of captured audio as a raw f32 binary.
+  The last `seconds` of captured audio, as raw bytes, without interrupting
+  the recording.
 
-  Used by the Session's watcher tick to transcribe a short trailing window
-  without stopping the recording. The window is byte-aligned to whole f32
-  samples (4 bytes); a window longer than the capture returns the whole
-  capture, and an empty capture returns `<<>>`.
+  The Session's stop-phrase watcher uses this to transcribe a short trailing
+  window every second while you keep talking. The window is trimmed so it
+  never cuts an audio sample in half; asking for more audio than exists
+  returns everything captured so far, and an empty capture returns `<<>>`.
   """
   @spec tail(GenServer.server(), float()) :: binary()
   def tail(server \\ __MODULE__, seconds) do

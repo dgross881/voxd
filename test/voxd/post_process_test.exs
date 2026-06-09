@@ -3,6 +3,8 @@ defmodule Voxd.PostProcessTest do
 
   alias Voxd.PostProcess
 
+  doctest Voxd.PostProcess
+
   @curly_open "“"
   @curly_close "”"
 

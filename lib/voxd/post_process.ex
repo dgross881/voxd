@@ -1,16 +1,26 @@
 defmodule Voxd.PostProcess do
   @moduledoc """
-  Pure transcription clean-up, ported 1:1 from the Python daemon's
-  `_post_process` (`daemon.py:55-68`).
+  Cleans up the raw text that comes out of Whisper before it gets typed.
 
-  The pipeline, in order:
+  Whisper gives back exactly what it heard — including the words you said to
+  control voxd, like "end recording" or "new paragraph." This module turns
+  those spoken commands into real formatting and tidies up the punctuation.
+  It is a direct port of the Python daemon's `_post_process`
+  (`daemon.py:55-68`): same rules, same order, same output.
 
-    1. Truncate at the first stop phrase (`end recording`, `done`, …).
-    2. Replace spoken formatting commands (`new paragraph`, `open quote`, …).
-    3. Strip leading newlines.
-    4. Remove spaces before `.,!?;:`.
+  `run/1` applies the rules in this order:
+
+    1. Cut the text off at the first stop phrase ("end recording", "done", …).
+    2. Turn spoken formatting commands into the real thing
+       ("new paragraph" → a blank line, "open quote" → `“`, …).
+    3. Remove newlines at the very start.
+    4. Remove stray spaces before punctuation (`hello , world` → `hello, world`).
     5. Capitalize the first letter after a blank line.
-    6. Append one trailing space unless the text is empty or ends in a newline.
+    6. Add one trailing space at the end — unless the text is empty or already
+       ends in a newline — so back-to-back dictations don't run together.
+
+  Every example in the docs below is a doctest: `mix test` runs them, so the
+  documentation cannot drift from what the code actually does.
   """
 
   @stop_phrase ~r/\b(end\s+(?:recording|dictation|transcription|it|conversation)|stop\s+(?:recording|dictating)|done|end)\b/i
@@ -35,6 +45,31 @@ defmodule Voxd.PostProcess do
 
   @doc """
   Run the full clean-up pipeline on a raw transcription string.
+
+  Everything after a stop phrase is cut off (the trailing space is the
+  standard "ready for the next dictation" suffix):
+
+      iex> Voxd.PostProcess.run("hello world end recording")
+      "hello world "
+
+  Spoken formatting commands become real formatting, and the first letter
+  after a blank line is capitalized:
+
+      iex> Voxd.PostProcess.run("line one new line line two")
+      "line one \\nline two "
+
+      iex> Voxd.PostProcess.run("first part paragraph second part")
+      "first part \\n\\nSecond part "
+
+  Stray spaces before punctuation are removed:
+
+      iex> Voxd.PostProcess.run("hello , world !")
+      "hello, world! "
+
+  Saying nothing but a stop phrase yields nothing to type:
+
+      iex> Voxd.PostProcess.run("done")
+      ""
   """
   @spec run(String.t()) :: String.t()
   def run(text) do
@@ -48,25 +83,53 @@ defmodule Voxd.PostProcess do
   end
 
   @doc """
-  Whether `text` contains a stop phrase (`end recording`, `done`, `stop
-  dictating`, …). Used by the Session's watcher to decide when a spoken
-  command should end the recording.
+  Whether `text` contains a spoken stop phrase ("end recording", "done",
+  "stop dictating", …). The Session's watcher calls this on each short
+  audio window to decide whether you just asked the recording to end.
+
+  Whole words only — words that merely *contain* a stop phrase don't count:
+
+      iex> Voxd.PostProcess.stop_phrase?("please end recording")
+      true
+
+      iex> Voxd.PostProcess.stop_phrase?("all done")
+      true
+
+      iex> Voxd.PostProcess.stop_phrase?("this is endless")
+      false
   """
   @spec stop_phrase?(String.t()) :: boolean()
   def stop_phrase?(text), do: Regex.match?(@stop_phrase, text)
 
   @doc """
-  Whether `text` is usable transcription output.
+  Whether `text` is worth typing at all.
 
-  Expects post-processed text (i.e. the output of `run/1`, which appends a
-  trailing space). `String.trim/1` handles the trailing space so raw Whisper
-  output also works, but the contract is post-processed.
+  When the audio was silence or noise, Whisper sometimes "hallucinates" —
+  it makes something up rather than returning nothing, typically a long run
+  of one repeated character (250 `!` marks was the real-world case). This
+  check rejects two things:
 
-  Two conditions reject text:
-  1. Empty or whitespace-only — mirrors Python's `if not text.strip()`.
-  2. A repetitive-character hallucination run (10+ identical chars) — the
-     pattern distil-whisper emits on near-silence audio, e.g. 250 `!`
-     characters. Short punctuation like `"..."` (3 chars) passes through.
+  1. Empty or whitespace-only text — mirrors the Python daemon's
+     `if not text.strip()`.
+  2. Ten or more identical characters in a row — the hallucination pattern.
+
+  Short punctuation like `"..."` is genuine Whisper output on quiet-but-real
+  speech and passes through, exactly as it does in Python:
+
+      iex> Voxd.PostProcess.meaningful?("hello world ")
+      true
+
+      iex> Voxd.PostProcess.meaningful?("...")
+      true
+
+      iex> Voxd.PostProcess.meaningful?("   ")
+      false
+
+      iex> Voxd.PostProcess.meaningful?(String.duplicate("!", 250))
+      false
+
+  Expects post-processed text (the output of `run/1`); raw Whisper output
+  also works since the trailing space is trimmed before checking.
   """
   @spec meaningful?(String.t()) :: boolean()
   def meaningful?(text) do

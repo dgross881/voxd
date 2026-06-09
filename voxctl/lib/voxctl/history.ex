@@ -1,9 +1,21 @@
 defmodule Voxctl.History do
   @moduledoc """
-  Reads and renders the transcription history JSONL file from
-  `~/.local/share/voxd/history.jsonl` directly — no daemon round-trip.
-  A small duplicated reader is acceptable here (the escript is stdlib-only and
-  cannot depend on the daemon's `Voxd.History`).
+  Shows your transcription history for `voxctl history` — read straight
+  from the history file, no need for the daemon to even be running.
+
+  Reads `~/.local/share/voxd/history.jsonl` (the file the daemon appends
+  to) and renders it as a numbered listing:
+
+        1  14:03  [dictation]  hello world
+        2  14:05  [ai]  The meeting moved to Thursday.
+
+  When there's no history yet, you get told exactly that:
+
+      iex> Voxctl.History.render(20, "/nonexistent/history.jsonl")
+      "No history yet."
+
+  This module intentionally duplicates the daemon's small JSONL reader:
+  the escript is stdlib-only and can't depend on `Voxd.History`.
   """
 
   @history_path Path.join([
@@ -21,8 +33,12 @@ defmodule Voxctl.History do
   def default_path, do: @history_path
 
   @doc """
-  Read the last `n` entries from `path`. `n <= 0` or a missing file returns
-  `[]`; blank lines are skipped.
+  Read the last `n` entries from `path`, oldest first. Asking for zero or
+  fewer, or reading a file that doesn't exist, returns an empty list; blank
+  lines are skipped.
+
+      iex> Voxctl.History.read(5, "/nonexistent/history.jsonl")
+      []
   """
   @spec read(integer(), String.t()) :: [map()]
   def read(n, _path) when n <= 0, do: []
@@ -35,8 +51,9 @@ defmodule Voxctl.History do
   end
 
   @doc """
-  Render the last `n` entries from `path` as the multi-line listing the Python
-  ctl prints, or `"No history yet."` when there are none.
+  Render the last `n` entries from `path` as the numbered listing shown in
+  the module docs (the same format the Python ctl printed), or
+  `"No history yet."` when there are none.
   """
   @spec render(integer(), String.t()) :: String.t()
   def render(n, path) do

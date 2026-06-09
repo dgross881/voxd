@@ -11,6 +11,8 @@ defmodule Voxctl.CLITest do
   records the exact line received.
   """
 
+  doctest Voxctl.CLI
+
   setup do
     path = short_socket_path()
     on_exit(fn -> File.rm(path) end)

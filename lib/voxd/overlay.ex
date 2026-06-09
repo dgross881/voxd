@@ -1,27 +1,40 @@
 defmodule Voxd.Overlay do
   @moduledoc """
-  Drives the on-screen overlay, a 1:1 port of the Python daemon's overlay seam
-  (`daemon.py:95-103`, `overlay.py`).
+  Drives the little on-screen status card — the visual feedback that tells
+  you voxd is recording, transcribing, or hit an error. A 1:1 port of the
+  Python daemon's overlay seam (`daemon.py:95-103`, `overlay.py`).
 
-  Two responsibilities:
+  This server has two jobs:
 
-    * **Process supervision** — launches the vendored `priv/overlay/overlay.py`
-      under `MuonTrap.Daemon` so the overlay dies with voxd and is restarted if
-      it exits. The overlay is *optional*: if it cannot be launched the daemon
-      logs and keeps running.
+    * **Keep the overlay window alive** — it launches the vendored
+      `priv/overlay/overlay.py` under `MuonTrap.Daemon`, so the overlay dies
+      with voxd and is relaunched if it crashes. The overlay is *optional*:
+      with no display (or a broken script) the daemon logs a warning and
+      keeps working — you just don't see the card.
 
-    * **Protocol writes** — writes single-line messages to the overlay FIFO
-      (`/tmp/voxd-overlay.pipe` by default). The wire protocol is `state\\n` or
-      `state:text\\n`; recording carries the mode (`recording:dictation`), and
-      audio level is `level:<"%.3f">`.
+    * **Tell the overlay what to show** — by writing one-line messages into
+      a named pipe (`/tmp/voxd-overlay.pipe` by default). A typical session
+      writes:
 
-  Opening a FIFO for writing with `O_WRONLY` blocks until a reader attaches and,
-  worse, a process stuck in that `open()` syscall cannot be killed — it can wedge
-  BEAM shutdown. So writes go through a short-lived `Task` that shells out and
-  opens the pipe `O_RDWR` (`1<>pipe`), which never blocks on a missing reader.
-  The `timeout` wrapper bounds the lifetime. The GenServer itself never blocks,
-  never crashes on a write failure, and silently skips when the pipe is missing —
-  matching `daemon.py:95-103`.
+          Overlay.show(Overlay, "recording", "dictation")  # card turns on, colored by mode
+          Overlay.level(Overlay, 0.42)                     # volume meter moves
+          Overlay.show(Overlay, "transcribing")            # spinner state
+          Overlay.show(Overlay, "idle")                    # card goes away
+
+      Each call returns `:ok` immediately; the actual pipe write happens in
+      the background. The wire format is `state\\n` or `state:text\\n` —
+      see `format_message/2` and `format_level/1` for doctested examples.
+
+  ## Why writes shell out instead of using `File.open`
+
+  Opening a named pipe for writing the normal way (`O_WRONLY`) freezes until
+  someone is reading the other end — and a process frozen inside that
+  `open()` call can't even be killed, which can wedge the whole VM at
+  shutdown (verified the hard way). So each write runs a short-lived shell
+  command that opens the pipe in read-write mode (`1<>pipe`), which never
+  blocks, wrapped in a `timeout` for an upper bound. The server itself never
+  blocks, never crashes on a failed write, and silently skips writing when
+  the pipe doesn't exist — matching the Python daemon.
   """
 
   use GenServer
@@ -62,15 +75,17 @@ defmodule Voxd.Overlay do
   end
 
   @doc """
-  Write a bare `state\\n` line to the overlay (e.g. `"transcribing"`, `"idle"`,
-  `"cancelled"`). Returns `:ok` immediately; the write happens off-process.
+  Show a bare state on the overlay (e.g. `"transcribing"`, `"idle"`,
+  `"cancelled"`). Returns `:ok` immediately; the pipe write happens in the
+  background.
   """
   @spec show(GenServer.server(), state()) :: :ok
   def show(server \\ __MODULE__, state), do: show(server, state, "")
 
   @doc """
-  Write a `state:text\\n` line. `error` text is truncated to the first
-  #{@error_text_limit} characters; `recording` carries the mode for card colour
+  Show a state with extra text. Error text is cut to the first
+  #{@error_text_limit} characters so a long crash message can't flood the
+  card; `recording` carries the mode so the card can pick its color
   (`recording:ai`, `recording:dictation`).
   """
   @spec show(GenServer.server(), state(), String.t()) :: :ok
@@ -79,7 +94,8 @@ defmodule Voxd.Overlay do
   end
 
   @doc """
-  Write a `level:<"%.3f">\\n` line for the audio meter.
+  Move the overlay's volume meter. `value` is `0.0` (silence) to `1.0`
+  (full); it is written as a `level:<"%.3f">\\n` line.
   """
   @spec level(GenServer.server(), float()) :: :ok
   def level(server \\ __MODULE__, value) do
@@ -87,8 +103,8 @@ defmodule Voxd.Overlay do
   end
 
   @doc """
-  Format a protocol message: `"state\\n"` when `text` is empty, otherwise
-  `"state:text\\n"`. `error` text is truncated to the first #{@error_text_limit}
+  Build one wire-protocol line: `"state\\n"` when `text` is empty, otherwise
+  `"state:text\\n"`. Error text is cut to the first #{@error_text_limit}
   characters (Python uses `error:{first 80 chars}`).
 
       iex> Voxd.Overlay.format_message("idle", "")
@@ -96,6 +112,10 @@ defmodule Voxd.Overlay do
 
       iex> Voxd.Overlay.format_message("recording", "ai")
       "recording:ai\\n"
+
+      iex> message = Voxd.Overlay.format_message("error", String.duplicate("x", 100))
+      iex> String.length(message)
+      87
   """
   @spec format_message(state(), String.t()) :: String.t()
   def format_message(state, ""), do: state <> "\n"
@@ -107,10 +127,14 @@ defmodule Voxd.Overlay do
   def format_message(state, text), do: state <> ":" <> text <> "\n"
 
   @doc """
-  Format an audio level line as `level:<"%.3f">\\n` (Python `"%.3f"`).
+  Build a volume-meter line, always with three decimal places
+  (Python `"%.3f"`).
 
       iex> Voxd.Overlay.format_level(0.5)
       "level:0.500\\n"
+
+      iex> Voxd.Overlay.format_level(0)
+      "level:0.000\\n"
   """
   @spec format_level(float()) :: String.t()
   def format_level(value) do

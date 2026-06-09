@@ -1,57 +1,85 @@
 defmodule Voxd.Session do
   @moduledoc """
-  The daemon's heart: a `:gen_statem` that owns the recording lifecycle and never
-  blocks on the GPU, Ollama, or the focus-settle sleep.
+  The daemon's heart: tracks where we are in the record → transcribe → type
+  cycle and reacts to every button press, timer tick, and crash along the way.
 
-  ## States (F3)
+  One hard rule shapes everything here: **the Session never waits on anything
+  slow.** Transcription (the GPU), the AI cleanup call, and the typing delay
+  all run in background Tasks. The Session only reacts to their results, so a
+  `voxctl toggle` always gets an instant answer no matter what's in flight.
 
-      :idle → :acquiring → :recording → :transcribing
+  ## The four states, as a user experiences them
 
-    * `:idle` — nothing captured. A `toggle/2` with a valid mode replies `"ok"`
-      immediately, shows the recording card, and spawns a monitored Task that
-      acquires the mic (`Recorder.start/1`) → `:acquiring`.
-    * `:acquiring` — the acquire Task is running. Its `:ok` starts the level and
-      watcher timers → `:recording`; `{:error, :no_input_device}` shows an error
-      and returns to `:idle`. A `toggle/2` here is acknowledged but ignored (no
-      double-start). `cancel/1` kills the acquire Task and releases the mic.
-    * `:recording` — capturing. `toggle/2` stops the recorder and either rejects
-      too-short audio or spawns a monitored pipeline Task → `:transcribing`.
-      Level ticks (150 ms) push scaled RMS to the overlay. Watcher ticks (1 s)
-      spawn a Task transcribing the last 2 s; a stop-phrase result is treated
-      exactly like `toggle/2`. Watcher ticks are non-overlapping: a tick is
-      skipped while a watcher Task is in flight (the GPU watcher pass is ~1.2 s,
-      longer than the 1 s tick). A Recorder `:DOWN` (F7) shows an error → idle.
-    * `:transcribing` — the pipeline Task is running outside the statem. Its
-      result returns the session to `:idle`; a crash shows an error → idle.
-      `toggle/2` here starts a brand-new recording (matching the Python daemon,
-      whose `recording_process` is `nil` during transcription, so a toggle starts
-      recording); the in-flight pipeline keeps running and pastes when done.
-      `cancel/1` is a no-op (transcription is not cancellable).
+      :idle → :acquiring → :recording → :transcribing → back to :idle
+
+  **`:idle` — waiting for you.** `toggle/2` answers `"ok"` immediately, shows
+  the recording card, and starts grabbing the microphone in the background.
+
+      Session.toggle("dictation")   #=> "ok"   (card appears, mic is warming up)
+
+  **`:acquiring` — grabbing the mic.** Takes about a second on Bluetooth.
+  Success starts the volume-meter and stop-phrase timers and recording is
+  live; failure shows "No input device" and returns to `:idle`. Pressing
+  toggle again here is acknowledged but ignored — you can't double-start.
+  `cancel/1` aborts the grab and frees the mic.
+
+  **`:recording` — capturing your voice.** Two timers run:
+
+    * every 150 ms the volume meter on the overlay is updated;
+    * every 1 s a background Task transcribes the last 2 seconds of audio,
+      listening for a spoken stop phrase ("end recording", "done", …). A
+      match acts exactly like pressing toggle. Ticks never overlap: while
+      one watcher Task is still running (the GPU pass takes ~1.2 s, longer
+      than the tick), the next tick is skipped.
+
+  Pressing toggle stops the recorder: a take shorter than 0.3 s is rejected
+  with "Recording too short"; anything longer heads to `:transcribing`. If
+  the recorder process dies mid-take, the Session notices (it's monitoring),
+  shows an error, and returns to `:idle`.
+
+  **`:transcribing` — turning speech into text.** The pipeline Task (below)
+  is running in the background. When it finishes, back to `:idle`. If it
+  crashes, the error shows on the overlay and the session still recovers to
+  `:idle` — a bad take never wedges the daemon. Pressing toggle here starts
+  a brand-new recording right away (matching the Python daemon); the
+  in-flight transcription keeps going and types its text when done.
+  `cancel/1` does nothing — transcription can't be canceled.
 
   ## The pipeline Task
 
-  Runs entirely outside the statem so the Session never blocks: transcribe
-  (`:final` serving) → `PostProcess.run/1` → if empty, an error overlay and stop
-  (no history, no paste) → else, for `"ai"` mode `AI.cleanup/2`, then
-  `History.append/2` and `Typist.paste/1`.
+  The full background journey of one take: transcribe the audio → clean up
+  the text (`PostProcess.run/1`) → if nothing usable was heard, show
+  "Nothing heard" and stop (no history entry, nothing typed) → otherwise,
+  for `"ai"` mode ask Ollama to polish the text → save to history → type it
+  into the focused window.
+
+  ## Status, from the outside
+
+      Session.status()              #=> "recording" (while acquiring/recording)
+      Session.status()              #=> "idle"      (while idle or transcribing)
+      Session.retype("hello ")      #=> "ok"        (types saved text, no recording)
 
   ## Dependency injection
 
-  Collaborators are injected so tests can substitute stubs/fakes:
+  Every collaborator is injectable so tests can substitute stubs/fakes:
 
-    * `:recorder` — the recorder server (pid or name) the Session monitors and
-      calls; default `Voxd.Recorder`.
-    * `:recorder_mod` — module whose functions (`start/1`, `stop/1`, `cancel/1`,
-      `level/1`, `tail/2`) take the server first; default `Voxd.Recorder`.
+    * `:recorder` — the recorder server (pid or name) the Session monitors
+      and calls; default `Voxd.Recorder`.
+    * `:recorder_mod` — module whose functions (`start/1`, `stop/1`,
+      `cancel/1`, `level/1`, `tail/2`) take the server first; default
+      `Voxd.Recorder`.
     * `:overlay_show` / `:overlay_level` — overlay effect functions.
     * `:typist_paste`, `:ai_cleanup`, `:history_append`, `:config_load` —
       pipeline effect functions.
-    * `:level_interval_ms` / `:watcher_interval_ms` — timer intervals (small in
-      tests).
+    * `:level_interval_ms` / `:watcher_interval_ms` — timer intervals
+      (made tiny in tests).
 
-  The transcriber is resolved from `Application.fetch_env!(:voxd, :transcriber)`
-  (`Voxd.Transcriber.Mock` in tests). The Session passes `serving: :final` /
-  `serving: :watcher`; the name→process resolution is the serving's concern.
+  The transcriber module comes from `Application.fetch_env!(:voxd,
+  :transcriber)` (`Voxd.Transcriber.Mock` in tests). The Session passes
+  `serving: :final` / `serving: :watcher`; resolving those names to processes
+  is the transcriber's concern.
+
+  Every state transition above is asserted in `test/voxd/session_test.exs`.
   """
 
   @behaviour :gen_statem
@@ -92,9 +120,9 @@ defmodule Voxd.Session do
   # --- public API ------------------------------------------------------------
 
   @doc """
-  Start the Session statem. See the moduledoc for injectable options. A `:name`
-  of `nil` starts it unregistered (tests); otherwise it registers under `:name`
-  (default `#{inspect(__MODULE__)}`).
+  Start the Session state machine. See the module docs for the injectable
+  options. A `:name` of `nil` starts it unregistered (tests); otherwise it
+  registers under `:name` (default `#{inspect(__MODULE__)}`).
   """
   @spec start_link(keyword()) :: :gen_statem.start_ret()
   def start_link(opts \\ []) do
@@ -118,9 +146,12 @@ defmodule Voxd.Session do
   end
 
   @doc """
-  Toggle recording for `mode` (`"dictation"` or `"ai"`). Returns `"ok"` for a
-  valid mode (the action depends on the current state) or `"unknown"` for an
-  invalid mode (no state change).
+  The main button: start a recording, or stop one that's running.
+
+  `mode` is `"dictation"` (type exactly what you said) or `"ai"` (polish the
+  text through Ollama first). Returns `"ok"` for a valid mode — what happens
+  next depends on the current state, see the module docs — or `"unknown"`
+  for anything else, with no state change.
   """
   @spec toggle(String.t()) :: String.t()
   def toggle(mode), do: toggle(__MODULE__, mode)
@@ -133,7 +164,8 @@ defmodule Voxd.Session do
   def toggle(_server, _mode), do: "unknown"
 
   @doc """
-  Cancel the current recording/acquisition. Always `"ok"`.
+  Abandon the current recording (or mic grab) and throw the audio away.
+  Always answers `"ok"`, even when there's nothing to cancel.
   """
   @spec cancel() :: String.t()
   def cancel, do: cancel(__MODULE__)
@@ -142,9 +174,10 @@ defmodule Voxd.Session do
   def cancel(server), do: :gen_statem.call(server, :cancel)
 
   @doc """
-  Current status: `"recording"` while acquiring or recording, `"idle"`
-  otherwise (idle or transcribing — matching the Python daemon, where status
-  flips to idle the moment recording stops).
+  What the daemon is doing right now: `"recording"` while grabbing the mic
+  or capturing, `"idle"` otherwise. Note that transcribing reports `"idle"`
+  too — matching the Python daemon, where status flips to idle the moment
+  recording stops.
   """
   @spec status() :: String.t()
   def status, do: status(__MODULE__)
@@ -153,9 +186,10 @@ defmodule Voxd.Session do
   def status(server), do: :gen_statem.call(server, :status)
 
   @doc """
-  Paste `text` verbatim into the focused window: a paste-only Task with no
-  post-process, history, or AI (matching the Python retype handler). Always
-  `"ok"`.
+  Type `text` into the focused window exactly as given — no recording, no
+  clean-up, no history entry, no AI (matching the Python retype handler).
+  Used by `voxctl history --copy N` to re-type an old transcription. Works
+  in any state and always answers `"ok"`.
   """
   @spec retype(String.t()) :: String.t()
   def retype(text), do: retype(__MODULE__, text)
@@ -409,7 +443,7 @@ defmodule Voxd.Session do
   end
 
   # Build a sanitized Nx tensor from raw f32 PCM bytes. USB mic hardware can
-  # produce NaN/Inf samples in the first few frames while the clock stabilises;
+  # produce NaN/Inf samples in the first few frames while the clock stabilizes;
   # feeding those into XLA crashes the Nx.Serving process. Replace with 0.0.
   @spec pcm_to_tensor(binary()) :: Nx.Tensor.t()
   defp pcm_to_tensor(pcm) do

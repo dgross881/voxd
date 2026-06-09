@@ -3,6 +3,8 @@ defmodule Voxd.HistoryTest do
 
   alias Voxd.History
 
+  doctest Voxd.History
+
   @iso_seconds ~r/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/
 
   @tag :tmp_dir

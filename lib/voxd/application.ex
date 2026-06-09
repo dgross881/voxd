@@ -1,32 +1,43 @@
 defmodule Voxd.Application do
   @moduledoc """
-  The voxd OTP application: a `:one_for_one` root supervisor wiring the daemon's
-  long-lived processes, plus boot-time lifecycle (pid/ready files, file logger,
-  signal handler).
+  Boots voxd and keeps every part of it alive.
 
-  ## Supervision tree
+  This is the application's root: it starts each long-lived process in
+  order, restarts whatever crashes, and handles the boot-time chores
+  (pid file, log file, signal handler).
+
+  ## Who supervises whom
 
       Voxd.Supervisor (one_for_one)
-      ├── Voxd.ServingSupervisor   (DynamicSupervisor — holds the two Nx.Servings)
-      ├── Voxd.Overlay             (GenServer; degrades gracefully with no display)
-      ├── Voxd.SessionSup          (Supervisor, rest_for_one)
-      │   ├── Voxd.Session         (gen_statem)
-      │   └── Voxd.Recorder        (GenServer; non-brutal shutdown — releases mic)
-      ├── Voxd.CtlSocket           (permanent accept loop; ready_fun = Ready.ready?)
-      └── Voxd.Transcriber.ServingLoader (temporary Task — loads model post-boot)
+      ├── Voxd.ServingSupervisor   (holds the two speech-model servings)
+      ├── Voxd.Overlay             (the on-screen card; optional without a display)
+      ├── Voxd.SessionSup          (rest_for_one)
+      │   ├── Voxd.Session         (the state machine — the daemon's heart)
+      │   └── Voxd.Recorder        (the mic; gets a graceful shutdown, never brutal)
+      ├── Voxd.CtlSocket           (the voxctl socket; permanent — always restarted)
+      └── Voxd.Transcriber.ServingLoader (one-shot background model loader)
 
-  The servings are started post-boot by the loader Task (not as static children),
-  so the socket accepts connections and reports `"loading"` the whole time the
-  model loads and the XLA graphs compile. `SessionSup` is `rest_for_one`: a
-  `Session` crash restarts both children (Recorder too); a `Recorder` crash
-  restarts only itself, and the `Session`'s monitor (F7) drives the error
-  transition.
+  Two deliberate choices in that shape:
+
+    * **The model loads after boot, not during.** The servings are started
+      by the loader Task rather than as static children, so the control
+      socket answers (`"loading"`) the whole time the model loads and
+      compiles. The daemon is responsive within a second of starting.
+
+    * **Session and Recorder restart together — but only in one direction.**
+      `rest_for_one` with Session first means a Session crash also restarts
+      the Recorder (no orphaned mic capture), while a Recorder crash
+      restarts only the Recorder — the Session is watching it and turns the
+      loss into an error overlay instead of dying too. And the Recorder's
+      shutdown is a graceful timeout, never `:brutal_kill`, because it must
+      release the microphone in `terminate/2`.
 
   ## Test gating
 
-  The full daemon tree must not start in `:test` (tests start each process via
-  `start_supervised!`). `start/2` reads `:voxd, :start_daemon?` (default `true`;
-  `config/test.exs` sets it `false`) and starts an empty tree in test.
+  The full daemon tree must not start in `:test` (tests start each process
+  themselves via `start_supervised!`). `start/2` reads `:voxd,
+  :start_daemon?` (default `true`; `config/test.exs` sets it `false`) and
+  starts an empty tree in test.
   """
 
   use Application

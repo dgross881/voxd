@@ -78,3 +78,11 @@ defmodule Voxctl.HistoryTest do
 
   defp entry(ts, mode, text), do: %{"ts" => ts, "mode" => mode, "text" => text}
 end
+
+defmodule Voxctl.HistoryDocTest do
+  use ExUnit.Case, async: true
+
+  # Separate module: the doctests need no setup, while Voxctl.HistoryTest's
+  # setup pattern-matches on the :tmp_dir tag that doctests don't carry.
+  doctest Voxctl.History
+end

@@ -1,16 +1,29 @@
 defmodule Voxd.AI do
   @moduledoc """
-  Optional AI cleanup of a transcription via a local Ollama server, a 1:1 port of
-  the Python daemon's `ai.py`.
+  The optional "polish my words" step: sends a transcription to a local
+  Ollama AI server to fix grammar, punctuation, and filler words. A 1:1 port
+  of the Python daemon's `ai.py`. Only used in `"ai"` mode — plain dictation
+  never touches this.
 
-  `cleanup/3` POSTs to `{ollama_url}/api/generate` (trailing slash stripped) with
-  `stream: false` and a 30 s receive timeout, sending the exact Python prompt with
-  the transcription substituted. The cleaned text is read from the response's
-  `"response"` field and trimmed.
+  How a call works:
 
-  This function **never raises**: an empty response, a non-200 status, a missing
-  field, a connection error, or a timeout all log a warning and return the
-  original `text` unchanged.
+      config = Voxd.Config.load()
+      Voxd.AI.cleanup("um so basically the meeting moved to thursday ", config)
+      #=> "The meeting moved to Thursday."
+
+  `cleanup/3` POSTs to `{ollama_url}/api/generate` (trailing slash stripped)
+  with `stream: false` and a 30-second timeout, sending the exact prompt the
+  Python daemon used with the transcription appended. The cleaned text is
+  read from the response's `"response"` field and trimmed.
+
+  **This function never raises.** Your words must not be lost because the AI
+  is down: an empty response, an error status, a missing field, a connection
+  failure, or a timeout each log a warning and return the original `text`
+  unchanged — so the pipeline types what you actually said.
+
+  (The example above needs a running Ollama server, so it isn't a doctest;
+  the fallback behavior is asserted in `test/voxd/ai_test.exs` with stubbed
+  HTTP responses.)
   """
 
   require Logger
@@ -20,12 +33,13 @@ defmodule Voxd.AI do
   @receive_timeout_ms 30_000
 
   @doc """
-  Clean up `text` using the Ollama config in `config` (`config["ai"]["model"]`
-  and `config["ai"]["ollama_url"]`).
+  Ask Ollama to clean up `text`, using the `"ai"` section of `config` for
+  the model name and server URL (`config["ai"]["model"]`,
+  `config["ai"]["ollama_url"]`).
 
-  `req_options` is merged into the `Req` request so tests can inject a
-  `plug: {Req.Test, Voxd.AI}` stub. On any failure the original `text` is
-  returned.
+  Returns the polished text on success and the original `text` on any
+  failure whatsoever. `req_options` is merged into the `Req` request so
+  tests can inject a `plug: {Req.Test, Voxd.AI}` stub.
   """
   @spec cleanup(String.t(), map(), keyword()) :: String.t()
   def cleanup(text, config, req_options \\ []) do
