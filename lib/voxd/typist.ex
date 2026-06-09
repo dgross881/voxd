@@ -71,7 +71,7 @@ defmodule Voxd.Typist do
 
   @spec copy_to_clipboard(String.t(), runner()) :: :ok
   defp copy_to_clipboard(text, runner) do
-    runner.("wl-copy", ["--", text], [])
+    runner.("wl-copy", ["--", text], []) |> warn_on_failure("wl-copy")
     :ok
   end
 
@@ -92,6 +92,8 @@ defmodule Voxd.Typist do
 
   defp type_line(line, runner) do
     runner.("ydotool", ["type" | @type_args] ++ [line], ydotool_opts())
+    |> warn_on_failure("ydotool type")
+
     :ok
   end
 
@@ -106,7 +108,19 @@ defmodule Voxd.Typist do
   @spec press_return(runner()) :: :ok
   defp press_return(runner) do
     runner.("ydotool", ["key", "KEY_RETURN"], ydotool_opts())
+    |> warn_on_failure("ydotool key KEY_RETURN")
+
     :ok
+  end
+
+  # Typing effects are fire-and-forget for control flow, but a non-zero exit is
+  # the only sign that ydotool/wl-copy silently failed — surface it in the log.
+  @spec warn_on_failure({Collectable.t(), integer()}, String.t()) :: {Collectable.t(), integer()}
+  defp warn_on_failure({_output, 0} = result, _label), do: result
+
+  defp warn_on_failure({output, status} = result, label) do
+    Logger.warning("typist: #{label} exited #{status}: #{inspect(output)}")
+    result
   end
 
   @spec ydotool_opts() :: keyword()

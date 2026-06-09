@@ -1,6 +1,8 @@
 defmodule Voxd.TypistTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias Voxd.Typist
 
   doctest Voxd.Typist
@@ -138,6 +140,20 @@ defmodule Voxd.TypistTest do
         assert socket_var == "YDOTOOL_SOCKET"
         assert socket_path =~ ~r{^/run/user/\d+/\.ydotool_socket$}
       end)
+    end
+  end
+
+  describe "failure logging" do
+    test "a non-zero ydotool exit is logged with its output" do
+      failing = fn _cmd, _args, _opts -> {"no socket", 1} end
+
+      log =
+        capture_log([level: :warning], fn ->
+          Typist.type("hello", runner: failing, sleeper: fn _ -> :ok end)
+        end)
+
+      assert log =~ "typist: ydotool type exited 1"
+      assert log =~ "no socket"
     end
   end
 
