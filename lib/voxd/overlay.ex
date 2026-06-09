@@ -176,12 +176,21 @@ defmodule Voxd.Overlay do
 
   def handle_info(_msg, state), do: {:noreply, state}
 
+  # Force the overlay onto XWayland (GDK_BACKEND=x11): under GNOME Wayland a
+  # parentless GTK POPUP becomes a focusable toplevel and STEALS keyboard focus
+  # when it maps, so the transcribed text gets typed into the overlay instead of
+  # the focused editor. On X11 the same POPUP is an override-redirect window the
+  # window manager never focuses. Mutter has no wlr-layer-shell, so XWayland is
+  # the only way to get a non-focusable always-on-top card here.
   @spec launch_overlay(keyword()) :: :ok
   defp launch_overlay(opts) do
     [executable | leading_args] = Keyword.get(opts, :command, @default_command)
     args = leading_args ++ [overlay_script(opts)]
 
-    case MuonTrap.Daemon.start_link(executable, args, log_output: :debug) do
+    case MuonTrap.Daemon.start_link(executable, args,
+           log_output: :debug,
+           env: [{"GDK_BACKEND", "x11"}]
+         ) do
       {:ok, _pid} ->
         :ok
 
