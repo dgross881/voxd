@@ -2,10 +2,12 @@ defmodule Voxd.Config do
   @moduledoc """
   Loads voxd's settings from `~/.config/voxd/config.toml`.
 
-  Settings the user leaves out fall back to built-in defaults: the file is
-  merged over the defaults one section at a time, so omitting a key from a
-  section keeps that key's default, and any extra sections the user adds are
-  kept as-is. No settings file at all simply means "use the defaults" —
+  Settings the user leaves out fall back to built-in defaults: each section
+  in the file is merged over the matching default section, so omitting a key
+  from a section keeps that key's default, and any extra sections the user
+  adds are kept as-is. (The merge is one level deep — a section's values are
+  overridden as a unit, not recursively.) No settings file at all simply
+  means "use the defaults" —
   which is exactly what loading a path that doesn't exist returns:
 
       iex> Voxd.Config.load("/nonexistent/config.toml")
