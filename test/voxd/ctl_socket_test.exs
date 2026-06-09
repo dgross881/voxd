@@ -117,19 +117,13 @@ defmodule Voxd.CtlSocketTest do
     assert send_line(path, "cancel") == "ok"
   end
 
+  # No poll-for-socket helper: CtlSocket.start_link opens the listen socket
+  # synchronously before returning, so start_supervised! only returns once the
+  # socket is bound. If that guarantee ever regresses, these tests fail outright
+  # (connection refused) instead of being masked by a retry loop.
   defp start_socket(path, opts \\ []) do
     opts = Keyword.merge([path: path, session: StubSession], opts)
-    pid = start_supervised!({CtlSocket, opts})
-    wait_for_socket(path)
-    pid
-  end
-
-  defp wait_for_socket(path, attempts \\ 100) do
-    cond do
-      File.exists?(path) -> :ok
-      attempts == 0 -> flunk("socket #{path} never appeared")
-      true -> Process.sleep(5) && wait_for_socket(path, attempts - 1)
-    end
+    start_supervised!({CtlSocket, opts})
   end
 
   defp send_line(path, command) do

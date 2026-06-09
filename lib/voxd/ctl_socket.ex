@@ -62,14 +62,30 @@ defmodule Voxd.CtlSocket do
     session = Keyword.get(opts, :session, Voxd.Session)
     ready_fun = Keyword.get(opts, :ready_fun, fn -> true end)
 
-    {:ok, spawn_link(fn -> listen_and_serve(path, session, ready_fun) end)}
-  end
-
-  @spec listen_and_serve(String.t(), module(), (-> boolean())) :: no_return()
-  defp listen_and_serve(path, session, ready_fun) do
     File.rm(path)
     {:ok, listen_socket} = open_listen_socket(path)
-    accept_loop(listen_socket, session, ready_fun)
+    {:ok, spawn_acceptor(listen_socket, session, ready_fun)}
+  end
+
+  # Open the listen socket here, in the caller, so start_link does not return
+  # until the socket is bound and queuing connections — `voxctl` connecting the
+  # instant the supervisor starts us can never race an unbound socket. Then hand
+  # ownership to the acceptor, because a listen socket closes when its owning
+  # process dies: that way an acceptor crash closes the socket and the
+  # supervisor's restart opens a clean one (no leaked port). The acceptor waits
+  # for `:owned` so it never calls accept on a socket it does not yet own.
+  @spec spawn_acceptor(:gen_tcp.socket(), module(), (-> boolean())) :: pid()
+  defp spawn_acceptor(listen_socket, session, ready_fun) do
+    acceptor =
+      spawn_link(fn ->
+        receive do
+          :owned -> accept_loop(listen_socket, session, ready_fun)
+        end
+      end)
+
+    :ok = :gen_tcp.controlling_process(listen_socket, acceptor)
+    send(acceptor, :owned)
+    acceptor
   end
 
   @spec open_listen_socket(String.t()) :: {:ok, :gen_tcp.socket()}
