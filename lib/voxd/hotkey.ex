@@ -8,10 +8,10 @@ defmodule Voxd.Hotkey do
   voxd reads the input device itself — below the compositor — and times the
   hold on its own.
 
-  The deal is simple: hold the configured key down for at least `:hold_ms`
-  (default 1 s) and voxd toggles a recording, exactly as if you'd pressed your
-  `voxctl toggle` shortcut. A quick tap does nothing, so the key keeps its
-  normal job — only a deliberate hold triggers voxd.
+  The deal is push-to-talk: hold the configured key down past `:hold_ms`
+  (default 1 s) and a recording starts (the card opens); keep holding while you
+  speak; release and voxd stops and transcribes. A quick tap does nothing, so
+  the key keeps its normal job — only a deliberate hold-and-talk triggers voxd.
 
   ## How it reads the keyboard
 
@@ -31,12 +31,14 @@ defmodule Voxd.Hotkey do
 
   ## The hold, as a tiny state machine
 
-      key down  → start a `:hold_ms` timer
-      key up    → cancel the timer (released too soon — a tap, ignored)
-      timer fires while still held → run the toggle, once
+      key down                      → start a `:hold_ms` timer
+      timer fires while still held  → toggle recording ON (the card opens)
+      key up after it started       → toggle recording OFF → transcribe
+      key up before the timer       → released too soon (a tap), ignored
 
-  No auto-repeat is assumed: the gesture rests entirely on a clean down/up pair
-  plus the timer.
+  Start and stop are the same `Voxd.Session.toggle/1` call, fired twice. No
+  auto-repeat is assumed: the gesture rests on a clean down/up pair plus the
+  timer.
 
   ## Robustness
 
@@ -65,7 +67,16 @@ defmodule Voxd.Hotkey do
   @default_hold_ms 1_000
   @default_retry_ms 3_000
 
-  defstruct [:keycode, :hold_ms, :retry_ms, :reader, :toggle_fun, :timer, held?: false]
+  defstruct [
+    :keycode,
+    :hold_ms,
+    :retry_ms,
+    :reader,
+    :toggle_fun,
+    :timer,
+    held?: false,
+    started?: false
+  ]
 
   @typedoc false
   @type t :: %__MODULE__{}
@@ -86,8 +97,9 @@ defmodule Voxd.Hotkey do
       `"dictation"`).
     * `:retry_ms` — pause before re-opening the device after a read error
       (default `#{@default_retry_ms}`).
-    * `:toggle_fun` — zero-argument effect run on a completed hold (default
-      toggles `Voxd.Session` in `:mode`); injected in tests.
+    * `:toggle_fun` — zero-argument toggle effect; run once when the hold
+      starts the recording and again on release to stop it (default toggles
+      `Voxd.Session` in `:mode`); injected in tests.
     * `:reader` — one-argument function given the server pid, responsible for
       starting the key-event stream; default opens the real device. Tests pass
       a no-op so no `/dev/input` access happens.
@@ -129,19 +141,25 @@ defmodule Voxd.Hotkey do
   # Key down on the watched key, not already held: arm the hold timer.
   def handle_info({:key, code, 1}, %{keycode: code, held?: false} = state) do
     timer = Process.send_after(self(), :hold_elapsed, state.hold_ms)
-    {:noreply, %{state | held?: true, timer: timer}}
+    {:noreply, %{state | held?: true, started?: false, timer: timer}}
   end
 
-  # Key up on the watched key: released — cancel a still-pending hold (a tap).
-  def handle_info({:key, code, 0}, %{keycode: code} = state) do
-    cancel_timer(state.timer)
-    {:noreply, %{state | held?: false, timer: nil}}
-  end
-
-  # The hold completed while the key is still down: fire the toggle once.
+  # The hold completed while still down: start recording (the card opens).
   def handle_info(:hold_elapsed, %{held?: true} = state) do
     state.toggle_fun.()
-    {:noreply, %{state | timer: nil}}
+    {:noreply, %{state | started?: true, timer: nil}}
+  end
+
+  # Released after recording started: toggle off — stop and transcribe.
+  def handle_info({:key, code, 0}, %{keycode: code, started?: true} = state) do
+    state.toggle_fun.()
+    {:noreply, %{state | held?: false, started?: false, timer: nil}}
+  end
+
+  # Released before the hold completed: a tap — cancel the timer, do nothing.
+  def handle_info({:key, code, 0}, %{keycode: code} = state) do
+    cancel_timer(state.timer)
+    {:noreply, %{state | held?: false, started?: false, timer: nil}}
   end
 
   # The device dropped out: log and re-open after a pause instead of crashing.

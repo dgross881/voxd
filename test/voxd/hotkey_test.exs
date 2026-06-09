@@ -24,8 +24,8 @@ defmodule Voxd.HotkeyTest do
   defp press(hotkey), do: send(hotkey, {:key, @keycode, 1})
   defp release(hotkey), do: send(hotkey, {:key, @keycode, 0})
 
-  describe "hold-to-toggle" do
-    test "holding past the threshold fires the toggle exactly once" do
+  describe "push-to-talk" do
+    test "holding past the threshold starts recording (one toggle)" do
       hotkey = start_hotkey(self())
 
       press(hotkey)
@@ -34,7 +34,17 @@ defmodule Voxd.HotkeyTest do
       refute_receive :toggled, 80
     end
 
-    test "releasing before the threshold does not fire" do
+    test "releasing after the hold started fires a second toggle (stop)" do
+      hotkey = start_hotkey(self())
+
+      press(hotkey)
+      assert_receive :toggled, 200
+
+      release(hotkey)
+      assert_receive :toggled, 200
+    end
+
+    test "releasing before the threshold fires nothing (a tap)" do
       hotkey = start_hotkey(self())
 
       press(hotkey)
@@ -43,24 +53,17 @@ defmodule Voxd.HotkeyTest do
       refute_receive :toggled, 120
     end
 
-    test "the release after a fire does not fire a second time" do
+    test "a second hold-and-release cycle toggles start then stop again" do
       hotkey = start_hotkey(self())
 
       press(hotkey)
       assert_receive :toggled, 200
       release(hotkey)
-
-      refute_receive :toggled, 120
-    end
-
-    test "a second hold after release fires again" do
-      hotkey = start_hotkey(self())
+      assert_receive :toggled, 200
 
       press(hotkey)
       assert_receive :toggled, 200
       release(hotkey)
-
-      press(hotkey)
       assert_receive :toggled, 200
     end
   end
