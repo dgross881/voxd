@@ -28,3 +28,10 @@ voxd-*.tar
 
 # MCP server config contains a local API key
 /.mcp.json
+
+# Python overlay bytecode
+__pycache__/
+*.pyc
+
+# Scratch test recording (root only)
+/test.wav

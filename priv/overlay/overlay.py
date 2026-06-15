@@ -4,7 +4,7 @@ import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("Pango", "1.0")
 gi.require_version("PangoCairo", "1.0")
-from gi.repository import Gtk, GLib, Gdk, Pango, PangoCairo
+from gi.repository import Gtk, GLib, Gdk, Pango, PangoCairo  # type: ignore[attr-defined]  # gi.repository modules are generated at runtime; pyright/mypy can't resolve them
 import os
 import math
 import time
@@ -13,47 +13,62 @@ import threading
 PIPE = "/tmp/voxd-overlay.pipe"
 
 # ------------------------------------------------------------
-# Card-style overlay. Bottom-center, fades in/out, frosted dark.
-# Pipe protocol unchanged: write "<state>:<optional text>\n"
-#   states: recording | transcribing | result | error | cancelled | idle
+# Futuristic glass card overlay. Bottom-center, fades in/out.
+# Pipe protocol unchanged:
+#   recording:dictation | recording:ai
+#   transcribing | result:<text> | error:<text> | cancelled | idle
+#   level:<0..1>   (live mic level for the waveform)
 # ------------------------------------------------------------
+
+# Cool-toned palette (RGB 0..1)
+CYAN   = (0.31, 0.89, 1.0)   # #4fe3ff  — dictation
+VIOLET = (0.72, 0.58, 1.0)   # #b794ff  — AI
+GREEN  = (0.33, 0.90, 0.63)  # #54e6a0  — result
+RED    = (1.0, 0.48, 0.45)   # #ff7a72  — error
+GREY   = (0.60, 0.62, 0.70)  # cancelled / dots
 
 CSS = b"""
 window { background-color: transparent; }
 
+/* Futuristic glass surface */
 .card {
-    background-color: rgba(20, 20, 22, 0.94);
-    border-radius: 18px;
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    /* GTK doesn't honor multiple shadows with offsets perfectly, but this
-       gives a soft drop shadow under the card. */
-    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.55),
-                0 4px 14px rgba(0, 0, 0, 0.4);
+    background-image: linear-gradient(180deg,
+        rgba(255,255,255,0.05),
+        rgba(255,255,255,0.00) 42%);
+    background-color: rgba(15, 16, 22, 0.96);
+    border-radius: 22px;
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.10);
 }
+/* state-tinted border ring (no outer shadow/glow - keeps the card edge clean) */
+.card.cyan   { border-color: rgba(79,227,255,0.45); }
+.card.violet { border-color: rgba(183,148,255,0.45); }
+.card.green  { border-color: rgba(84,230,160,0.40); }
+.card.red    { border-color: rgba(255,122,114,0.42); }
 
 .label {
-    color: #8a8a92;
-    font-family: "Inter", "SF Pro Display", "Segoe UI", Sans;
+    color: #7d8298;
+    font-family: "JetBrains Mono", "SF Mono", "DejaVu Sans Mono", Monospace;
     font-size: 10px;
     font-weight: 600;
-    letter-spacing: 1.4px;
+    letter-spacing: 2px;
 }
-.label.rec { color: #ff6b62; }
-.label.ai  { color: #a78bfa; }
-.label.ok  { color: #4cd97a; }
-.label.err { color: #ff6b62; }
+.label.cyan   { color: #7ceaff; }
+.label.violet { color: #c9b0ff; }
+.label.ok     { color: #6df0b3; }
+.label.err    { color: #ff948d; }
 
 .text {
-    color: #f5f5f7;
+    color: #eef0f6;
     font-family: "Inter", "SF Pro Display", "Segoe UI", Sans;
     font-size: 14px;
     font-weight: 500;
 }
-.text.muted { color: #8a8a92; }
+.text.muted { color: #7d8298; }
 
 .meta {
-    color: #8a8a92;
-    font-family: "Inter", "SF Pro Display", "Segoe UI", Sans;
+    color: #7d8298;
+    font-family: "JetBrains Mono", "SF Mono", "DejaVu Sans Mono", Monospace;
     font-size: 12px;
     font-weight: 500;
 }
@@ -63,14 +78,13 @@ window { background-color: transparent; }
 # ---------- Custom drawing widgets ----------
 
 class WaveformIndicator(Gtk.DrawingArea):
-    """Five animated bars. Pure visual, not tied to mic level."""
+    """Five animated bars with a soft glow. Color switches by mode."""
 
     BARS = 5
     BAR_WIDTH = 3
     BAR_GAP = 3
-    MIN_H = 5
-    MAX_H = 22
-    COLOR = (1.0, 0.27, 0.23)  # #ff453a-ish
+    MIN_H = 6
+    MAX_H = 24
 
     def __init__(self):
         super().__init__()
@@ -79,10 +93,15 @@ class WaveformIndicator(Gtk.DrawingArea):
         self._t0 = time.monotonic()
         self._tick_id = None
         self._level = 0.0
+        self._color = CYAN
         self.connect("draw", self._on_draw)
 
     def set_level(self, level: float) -> None:
         self._level = max(0.0, min(1.0, level))
+
+    def set_color(self, rgb) -> None:
+        self._color = rgb
+        self.queue_draw()
 
     def start(self):
         if self._tick_id is None:
@@ -101,25 +120,30 @@ class WaveformIndicator(Gtk.DrawingArea):
     def _on_draw(self, widget, cr):
         alloc = self.get_allocation()
         t = time.monotonic() - self._t0
-        cx = 0
         cy = alloc.height / 2
-        r, g, b = self.COLOR
+        r, g, b = self._color
         lv = self._level
         for i in range(self.BARS):
             phase = t * 2.6 - i * 0.35
             v = 0.5 + 0.5 * math.sin(phase)
             effective_max = self.MIN_H + (self.MAX_H - self.MIN_H) * lv
             h = self.MIN_H + (effective_max - self.MIN_H) * v
-            x = cx + i * (self.BAR_WIDTH + self.BAR_GAP)
+            x = i * (self.BAR_WIDTH + self.BAR_GAP)
             y = cy - h / 2
-            alpha = 0.25 + 0.75 * lv
-            cr.set_source_rgba(r, g, b, alpha * (0.6 + 0.4 * v))
+            intensity = 0.6 + 0.4 * v
+            # soft glow — wider, low-alpha bar behind
+            cr.set_source_rgba(r, g, b, 0.18 * intensity)
+            self._round_rect(cr, x - 1.5, y - 1.5, self.BAR_WIDTH + 3, h + 3, 3)
+            cr.fill()
+            # solid bar
+            cr.set_source_rgba(r, g, b, (0.35 + 0.65 * lv) * intensity)
             self._round_rect(cr, x, y, self.BAR_WIDTH, h, 1.5)
             cr.fill()
         return False
 
     @staticmethod
     def _round_rect(cr, x, y, w, h, r):
+        r = min(r, w / 2, h / 2)
         cr.new_sub_path()
         cr.arc(x + w - r, y + r, r, -math.pi / 2, 0)
         cr.arc(x + w - r, y + h - r, r, 0, math.pi / 2)
@@ -135,12 +159,12 @@ class DotsIndicator(Gtk.DrawingArea):
     DOT_R = 2.5
     GAP = 4
     AMPLITUDE = 4
-    COLOR = (0.72, 0.72, 0.75)  # #b8b8c0
+    COLOR = GREY
 
     def __init__(self):
         super().__init__()
         w = self.DOTS * (self.DOT_R * 2) + (self.DOTS - 1) * self.GAP
-        self.set_size_request(int(w), 22)
+        self.set_size_request(int(w), 24)
         self._t0 = time.monotonic()
         self._tick_id = None
         self.connect("draw", self._on_draw)
@@ -162,19 +186,19 @@ class DotsIndicator(Gtk.DrawingArea):
         cy = alloc.height / 2
         for i in range(self.DOTS):
             phase = t * 4.5 - i * 0.6
-            v = max(0.0, math.sin(phase))  # 0..1, only positive half
+            v = max(0.0, math.sin(phase))  # 0..1, positive half only
             dy = -v * self.AMPLITUDE
             x = self.DOT_R + i * (self.DOT_R * 2 + self.GAP)
-            cr.set_source_rgba(r, g, b, 0.4 + 0.6 * v)
+            cr.set_source_rgba(r, g, b, 0.35 + 0.65 * v)
             cr.arc(x, cy + dy, self.DOT_R, 0, 2 * math.pi)
             cr.fill()
         return False
 
 
 class GlyphBadge(Gtk.DrawingArea):
-    """Round chip with a single glyph in it. Used for ✓ / ! / ×."""
+    """Round chip with a single glyph, with a soft glow halo. ✓ / ! / ×."""
 
-    SIZE = 22
+    SIZE = 24
 
     def __init__(self):
         super().__init__()
@@ -182,29 +206,36 @@ class GlyphBadge(Gtk.DrawingArea):
         self._glyph = ""
         self._fg = (1, 1, 1, 1)
         self._bg = (1, 1, 1, 0.06)
+        self._glow = None
         self.connect("draw", self._on_draw)
 
-    def set_state(self, glyph: str, fg_rgba, bg_rgba):
+    def set_state(self, glyph, fg_rgba, bg_rgba, glow_rgb=None):
         self._glyph = glyph
         self._fg = fg_rgba
         self._bg = bg_rgba
+        self._glow = glow_rgb
         self.queue_draw()
 
     def _on_draw(self, widget, cr):
         s = self.SIZE
+        cx = cy = s / 2
+        # glow halo
+        if self._glow is not None:
+            gr, gg, gb = self._glow
+            cr.set_source_rgba(gr, gg, gb, 0.18)
+            cr.arc(cx, cy, s / 2 + 2, 0, 2 * math.pi)
+            cr.fill()
         # background circle
         cr.set_source_rgba(*self._bg)
-        cr.arc(s / 2, s / 2, s / 2, 0, 2 * math.pi)
+        cr.arc(cx, cy, s / 2, 0, 2 * math.pi)
         cr.fill()
 
         if not self._glyph:
             return False
 
-        # glyph
         cr.set_source_rgba(*self._fg)
         layout = self.create_pango_layout(self._glyph)
-        font = Pango.FontDescription("Inter Bold 11")
-        layout.set_font_description(font)
+        layout.set_font_description(Pango.FontDescription("Inter Bold 11"))
         tw, th = layout.get_pixel_size()
         cr.move_to((s - tw) / 2, (s - th) / 2 - 1)
         PangoCairo.show_layout(cr, layout)
@@ -214,8 +245,11 @@ class GlyphBadge(Gtk.DrawingArea):
 # ---------- Main window ----------
 
 class Overlay(Gtk.Window):
-    WIDTH = 420
+    WIDTH = 300
     BOTTOM_MARGIN = 80
+
+    # state name -> card glow style class
+    _CARD_CLASSES = ("cyan", "violet", "green", "red")
 
     def __init__(self):
         super().__init__(type=Gtk.WindowType.POPUP)
@@ -243,35 +277,35 @@ class Overlay(Gtk.Window):
         self.connect("draw", self._on_draw)
 
         # ---------- layout ----------
-        # Outer transparent margin so the shadow has room to render.
         outer = Gtk.Box()
-        outer.set_margin_top(14)
-        outer.set_margin_bottom(14)
-        outer.set_margin_start(14)
-        outer.set_margin_end(14)
+        outer.set_margin_top(16)
+        outer.set_margin_bottom(16)
+        outer.set_margin_start(16)
+        outer.set_margin_end(16)
         self.add(outer)
 
-        card = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
-        card.get_style_context().add_class("card")
-        card.set_margin_top(0)
+        card = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=15)
+        self._card = card
+        self._card_ctx = card.get_style_context()
+        self._card_ctx.add_class("card")
         card.set_size_request(self.WIDTH, -1)
-        # internal padding
-        card_pad = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
-        card_pad.set_margin_top(14)
-        card_pad.set_margin_bottom(14)
-        card_pad.set_margin_start(18)
-        card_pad.set_margin_end(18)
+
+        card_pad = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=15)
+        card_pad.set_margin_top(15)
+        card_pad.set_margin_bottom(15)
+        card_pad.set_margin_start(20)
+        card_pad.set_margin_end(20)
         card.pack_start(card_pad, True, True, 0)
         outer.pack_start(card, False, False, 0)
 
-        # Icon slot — fixed 32px square, holds whichever indicator is active
+        # Icon slot
         self._icon_slot = Gtk.Box()
-        self._icon_slot.set_size_request(32, 32)
+        self._icon_slot.set_size_request(30, 30)
         self._icon_slot.set_valign(Gtk.Align.CENTER)
         self._icon_slot.set_halign(Gtk.Align.CENTER)
         card_pad.pack_start(self._icon_slot, False, False, 0)
 
-        # Body — vertical stack: tiny label + main text
+        # Body
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
         body.set_valign(Gtk.Align.CENTER)
         card_pad.pack_start(body, True, True, 0)
@@ -279,6 +313,8 @@ class Overlay(Gtk.Window):
         self._label = Gtk.Label(xalign=0)
         self._label.get_style_context().add_class("label")
         self._label.set_ellipsize(Pango.EllipsizeMode.END)
+        # visibility is managed per-state (hidden while recording/transcribing)
+        self._label.set_no_show_all(True)
         body.pack_start(self._label, False, False, 0)
 
         self._text = Gtk.Label(xalign=0)
@@ -290,19 +326,19 @@ class Overlay(Gtk.Window):
         self._text.set_max_width_chars(38)
         body.pack_start(self._text, False, False, 0)
 
-        # Meta (right side, e.g. recording timer)
+        # Meta (recording timer)
         self._meta = Gtk.Label(xalign=1)
         self._meta.get_style_context().add_class("meta")
         self._meta.set_valign(Gtk.Align.CENTER)
         card_pad.pack_end(self._meta, False, False, 0)
 
-        # Indicator widgets (created once, swapped into icon slot)
+        # Indicators
         self._wave = WaveformIndicator()
         self._dots = DotsIndicator()
         self._badge = GlyphBadge()
         self._current_indicator = None
 
-        # State for animations & timers
+        # Timers / animation state
         self._hide_timer = None
         self._fade_timer = None
         self._opacity_target = 1.0
@@ -315,6 +351,13 @@ class Overlay(Gtk.Window):
         cr.set_operator(1)  # CAIRO_OPERATOR_SOURCE
         cr.paint()
         return False
+
+    # --- card accent ---
+    def _set_card_accent(self, name):
+        for c in self._CARD_CLASSES:
+            self._card_ctx.remove_class(c)
+        if name:
+            self._card_ctx.add_class(name)
 
     # --- positioning ---
     def _reposition(self):
@@ -373,7 +416,7 @@ class Overlay(Gtk.Window):
             GLib.source_remove(self._record_timer)
             self._record_timer = None
 
-    # --- recording timer (mm:ss in meta slot) ---
+    # --- recording timer ---
     def _start_record_timer(self):
         self._record_t0 = time.monotonic()
         self._meta.set_text("0:00")
@@ -412,7 +455,7 @@ class Overlay(Gtk.Window):
         text_ctx = self._text.get_style_context()
         text_ctx.remove_class("muted")
         label_ctx = self._label.get_style_context()
-        for c in ("rec", "ok", "err", "ai"):
+        for c in ("cyan", "violet", "ok", "err"):
             label_ctx.remove_class(c)
 
         if state == "recording":
@@ -421,11 +464,12 @@ class Overlay(Gtk.Window):
             self._dots.stop()
             mode = text if text in ("dictation", "ai") else "dictation"
             if mode == "ai":
-                self._label.set_text("AI")
-                label_ctx.add_class("ai")
+                self._wave.set_color(VIOLET)
+                self._set_card_accent("violet")
             else:
-                self._label.set_text("DICTATION")
-                label_ctx.add_class("rec")
+                self._wave.set_color(CYAN)
+                self._set_card_accent("cyan")
+            self._label.set_visible(False)
             self._text.set_text("Listening…")
             if self._record_timer is None:
                 self._start_record_timer()
@@ -435,7 +479,8 @@ class Overlay(Gtk.Window):
             self._dots.start()
             self._wave.stop()
             self._stop_record_timer()
-            self._label.set_text("TRANSCRIBING")
+            self._set_card_accent(None)
+            self._label.set_visible(False)
             self._text.set_text("Converting speech to text…")
             text_ctx.add_class("muted")
 
@@ -443,12 +488,15 @@ class Overlay(Gtk.Window):
             self._set_indicator(self._badge)
             self._badge.set_state(
                 "✓",
-                fg_rgba=(0.30, 0.82, 0.36, 1.0),
-                bg_rgba=(0.30, 0.82, 0.36, 0.16),
+                fg_rgba=(*GREEN, 1.0),
+                bg_rgba=(*GREEN, 0.16),
+                glow_rgb=GREEN,
             )
             self._wave.stop()
             self._dots.stop()
             self._stop_record_timer()
+            self._set_card_accent("green")
+            self._label.set_visible(True)
             self._label.set_text("INSERTED")
             label_ctx.add_class("ok")
             self._text.set_text(text or "Done")
@@ -460,12 +508,15 @@ class Overlay(Gtk.Window):
             self._set_indicator(self._badge)
             self._badge.set_state(
                 "!",
-                fg_rgba=(1.0, 0.42, 0.38, 1.0),
-                bg_rgba=(1.0, 0.27, 0.23, 0.16),
+                fg_rgba=(*RED, 1.0),
+                bg_rgba=(*RED, 0.16),
+                glow_rgb=RED,
             )
             self._wave.stop()
             self._dots.stop()
             self._stop_record_timer()
+            self._set_card_accent("red")
+            self._label.set_visible(True)
             self._label.set_text("ERROR")
             label_ctx.add_class("err")
             self._text.set_text(text or "Something went wrong")
@@ -477,12 +528,15 @@ class Overlay(Gtk.Window):
             self._set_indicator(self._badge)
             self._badge.set_state(
                 "×",
-                fg_rgba=(0.6, 0.6, 0.63, 1.0),
-                bg_rgba=(1.0, 1.0, 1.0, 0.06),
+                fg_rgba=(*GREY, 1.0),
+                bg_rgba=(1.0, 1.0, 1.0, 0.07),
+                glow_rgb=None,
             )
             self._wave.stop()
             self._dots.stop()
             self._stop_record_timer()
+            self._set_card_accent(None)
+            self._label.set_visible(True)
             self._label.set_text("CANCELLED")
             self._text.set_text("Recording discarded")
             text_ctx.add_class("muted")
