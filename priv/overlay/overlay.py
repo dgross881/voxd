@@ -246,7 +246,7 @@ class GlyphBadge(Gtk.DrawingArea):
 
 class Overlay(Gtk.Window):
     WIDTH = 300
-    BOTTOM_MARGIN = 80
+    BOTTOM_MARGIN = 40
 
     # state name -> card glow style class
     _CARD_CLASSES = ("cyan", "violet", "green", "red")
@@ -369,10 +369,11 @@ class Overlay(Gtk.Window):
         display = Gdk.Display.get_default()
         monitor = display.get_primary_monitor() or display.get_monitor(0)
         geo = monitor.get_geometry()
-        scale = monitor.get_scale_factor() or 1
         w, h = self.get_size()
-        x = geo.x + (geo.width // scale - w) // 2
-        y = geo.y + geo.height // scale - h - self.BOTTOM_MARGIN
+        # geo and move() are both in logical (already scale-adjusted) pixels on
+        # the X11 backend, so don't divide by the scale factor again.
+        x = geo.x + (geo.width - w) // 2
+        y = geo.y + geo.height - h - self.BOTTOM_MARGIN
         self.move(x, y)
         return False
 
