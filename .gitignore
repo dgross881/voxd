@@ -23,8 +23,9 @@ erl_crash.dump
 voxd-*.tar
 
 
-# Plan/scratchpad files are local-only
+# Plan/scratchpad and AI assistant config — local-only
 /.claude/
+/CLAUDE.md
 
 # MCP server config contains a local API key
 /.mcp.json
